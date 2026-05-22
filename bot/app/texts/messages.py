@@ -1,0 +1,1 @@
+"""Centralized message texts placeholder."""

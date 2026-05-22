@@ -1,0 +1,1 @@
+"""User fixtures placeholder."""

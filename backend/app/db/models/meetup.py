@@ -40,6 +40,9 @@ class Meetup(TimestampMixin, Base):
     location: Mapped[str] = mapped_column(Text, nullable=False)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     capacity_total: Mapped[int] = mapped_column(Integer, nullable=False)
+    telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    telegram_thread_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     status: Mapped[MeetupStatus] = mapped_column(
         Enum(MeetupStatus, name="meetup_status", values_callable=enum_values),
         default=MeetupStatus.PLANNED,

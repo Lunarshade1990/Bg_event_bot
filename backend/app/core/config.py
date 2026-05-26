@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     backend_port: int = Field(default=8000, alias="BACKEND_PORT")
     backend_base_url: str = Field(default="http://127.0.0.1:8000", alias="BACKEND_BASE_URL")
 
+    telegram_group_id: int | None = Field(default=None, alias="TELEGRAM_GROUP_ID")
+    telegram_topic_name: str | None = Field(default=None, alias="TELEGRAM_TOPIC_NAME")
+
     @property
     def sqlalchemy_database_uri(self) -> str:
         return URL.create(

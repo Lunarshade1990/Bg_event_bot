@@ -92,3 +92,99 @@ class BackendAPIClient:
             response = await client.post("/api/imports/bgg/collection", json=payload)
             response.raise_for_status()
             return response.json()
+
+    async def create_meetup(
+        self,
+        *,
+        creator_user_id: int,
+        scheduled_at: str,
+        capacity_total: int,
+        comment: str | None = None,
+        telegram_chat_id: int | None = None,
+        telegram_thread_id: int | None = None,
+    ) -> dict:
+        payload = {
+            "creator_user_id": creator_user_id,
+            "scheduled_at": scheduled_at,
+            "capacity_total": capacity_total,
+            "comment": comment,
+            "telegram_chat_id": telegram_chat_id,
+            "telegram_thread_id": telegram_thread_id,
+        }
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.post("/api/meetups", json=payload)
+            response.raise_for_status()
+            return response.json()
+
+    async def list_meetups(
+        self,
+        *,
+        telegram_chat_id: int | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[dict]:
+        params = {"limit": limit, "offset": offset}
+        if telegram_chat_id is not None:
+            params["telegram_chat_id"] = telegram_chat_id
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.get("/api/meetups", params=params)
+            response.raise_for_status()
+            return response.json()
+
+    async def get_telegram_topic(self, telegram_chat_id: int) -> dict | None:
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.get(f"/api/meetups/telegram-topics/{telegram_chat_id}")
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            return response.json()
+
+    async def upsert_telegram_topic(self, telegram_chat_id: int, *, telegram_thread_id: int) -> dict:
+        payload = {
+            "telegram_chat_id": telegram_chat_id,
+            "telegram_thread_id": telegram_thread_id,
+        }
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.post("/api/meetups/telegram-topics", json=payload)
+            response.raise_for_status()
+            return response.json()
+
+    async def get_meetup(self, meetup_id: int) -> dict:
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.get(f"/api/meetups/{meetup_id}")
+            response.raise_for_status()
+            return response.json()
+
+    async def join_meetup(self, meetup_id: int, *, user_id: int) -> dict:
+        payload = {"user_id": user_id}
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.post(f"/api/meetups/{meetup_id}/join", json=payload)
+            response.raise_for_status()
+            return response.json()
+
+    async def leave_meetup(self, meetup_id: int, *, user_id: int) -> dict:
+        payload = {"user_id": user_id}
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.post(f"/api/meetups/{meetup_id}/leave", json=payload)
+            response.raise_for_status()
+            return response.json()
+
+    async def set_meetup_telegram_message_id(self, meetup_id: int, *, telegram_message_id: int) -> dict:
+        payload = {"telegram_message_id": telegram_message_id}
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.post(
+                f"/api/meetups/{meetup_id}/telegram-message",
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def delete_meetup(self, meetup_id: int, *, requesting_user_id: int) -> None:
+        payload = {"requesting_user_id": requesting_user_id}
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.request(
+                "DELETE",
+                f"/api/meetups/{meetup_id}",
+                json=payload,
+            )
+            response.raise_for_status()

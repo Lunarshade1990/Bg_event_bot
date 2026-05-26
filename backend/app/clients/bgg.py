@@ -22,13 +22,29 @@ def fetch_owned_collection(
 ):
     for attempt in range(1, retries + 1):
         try:
-            return client.collection(user_name=bgg_username, subtype=subtype, own=True)
+            return client.collection(user_name=bgg_username, subtype=subtype)
         except BGGApiRetryError:
             if attempt == retries:
                 raise
             sleep(retry_delay_seconds)
 
-    return client.collection(user_name=bgg_username, subtype=subtype, own=True)
+    return client.collection(user_name=bgg_username, subtype=subtype)
+
+
+def _should_include_collection_item(item) -> bool:
+    if bool(getattr(item, "owned", False)):
+        return True
+
+    status_flags = [
+        bool(getattr(item, "preordered", False)),
+        bool(getattr(item, "prev_owned", False)),
+        bool(getattr(item, "want", False)),
+        bool(getattr(item, "want_to_buy", False)),
+        bool(getattr(item, "want_to_play", False)),
+        bool(getattr(item, "for_trade", False)),
+        bool(getattr(item, "wishlist", False)),
+    ]
+    return not any(status_flags)
 
 
 def iter_owned_collection_items(client: BGGClient, *, bgg_username: str):
@@ -53,4 +69,5 @@ def iter_owned_collection_items(client: BGGClient, *, bgg_username: str):
 
     for subtype, collection in collections:
         for item in collection:
-            yield subtype, item
+            if _should_include_collection_item(item):
+                yield subtype, item

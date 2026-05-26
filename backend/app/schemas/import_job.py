@@ -13,6 +13,7 @@ class BggCollectionImportResult(BaseModel):
     user_id: int
     bgg_username: str
     status: ImportJobStatus
+    collection_games_count: int
     processed_games: int
     created_games: int
     updated_games: int

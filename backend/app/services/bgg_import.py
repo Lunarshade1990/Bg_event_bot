@@ -36,7 +36,13 @@ def _extract_has_campaign(game_details) -> tuple[bool, CampaignSource]:
     return "Campaign Game" in mechanics, CampaignSource.BGG
 
 
-def _upsert_game_from_bgg(db: Session, *, subtype: str, collection_item, game_details) -> tuple[Game, bool, bool]:
+def _upsert_game_from_bgg(
+    db: Session,
+    *,
+    subtype: str,
+    collection_item,
+    game_details,
+) -> tuple[Game, bool, bool]:
     game = game_repository.get_game_by_bgg_id(db, collection_item.id)
     created = False
     updated = False
@@ -145,9 +151,13 @@ def import_bgg_collection(
 
     counters = ImportCounters()
     client = get_bgg_client()
+    synced_game_ids: set[int] = set()
 
     try:
-        for subtype, item in iter_owned_collection_items(client, bgg_username=resolved_bgg_username):
+        for subtype, item in iter_owned_collection_items(
+            client,
+            bgg_username=resolved_bgg_username,
+        ):
             details = client.game(game_id=item.id)
             game, created, updated = _upsert_game_from_bgg(
                 db,
@@ -158,6 +168,7 @@ def import_bgg_collection(
             counters.processed_games += 1
             counters.created_games += int(created)
             counters.updated_games += int(updated)
+            synced_game_ids.add(game.id)
 
             user_game = import_repository.get_user_game(db, user_id=user.id, game_id=game.id)
             if user_game is None:
@@ -168,6 +179,13 @@ def import_bgg_collection(
                     source=OwnershipSource.BGG_IMPORT,
                 )
                 counters.linked_games += 1
+
+        import_repository.delete_missing_bgg_import_user_games(
+            db,
+            user_id=user.id,
+            present_game_ids=synced_game_ids,
+        )
+        collection_games_count = import_repository.count_user_games(db, user_id=user.id)
 
         import_repository.mark_import_job_completed(
             db,
@@ -189,6 +207,7 @@ def import_bgg_collection(
         user_id=user.id,
         bgg_username=resolved_bgg_username,
         status=ImportJobStatus.COMPLETED,
+        collection_games_count=collection_games_count,
         processed_games=counters.processed_games,
         created_games=counters.created_games,
         updated_games=counters.updated_games,

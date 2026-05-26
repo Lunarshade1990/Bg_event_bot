@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from backend.app.db.models.bgg_import_job import BggImportJob
@@ -23,21 +23,21 @@ def create_import_job(db: Session, *, user_id: int, bgg_username: str) -> BggImp
 
 def mark_import_job_in_progress(db: Session, job: BggImportJob) -> None:
     job.status = ImportJobStatus.IN_PROGRESS
-    job.started_at = datetime.now(timezone.utc)
+    job.started_at = datetime.now(UTC)
     db.flush()
 
 
 def mark_import_job_completed(db: Session, job: BggImportJob, *, imported_count: int) -> None:
     job.status = ImportJobStatus.COMPLETED
     job.imported_count = imported_count
-    job.finished_at = datetime.now(timezone.utc)
+    job.finished_at = datetime.now(UTC)
     job.error_message = None
     db.flush()
 
 
 def mark_import_job_failed(db: Session, job: BggImportJob, *, error_message: str) -> None:
     job.status = ImportJobStatus.FAILED
-    job.finished_at = datetime.now(timezone.utc)
+    job.finished_at = datetime.now(UTC)
     job.error_message = error_message
     db.flush()
 
@@ -64,6 +64,28 @@ def create_user_game(
     db.add(user_game)
     db.flush()
     return user_game
+
+
+def delete_missing_bgg_import_user_games(
+    db: Session,
+    *,
+    user_id: int,
+    present_game_ids: set[int],
+) -> int:
+    stmt = delete(UserGame).where(
+        UserGame.user_id == user_id,
+        UserGame.source == OwnershipSource.BGG_IMPORT,
+    )
+    if present_game_ids:
+        stmt = stmt.where(UserGame.game_id.not_in(present_game_ids))
+    result = db.execute(stmt)
+    db.flush()
+    return int(result.rowcount or 0)
+
+
+def count_user_games(db: Session, *, user_id: int) -> int:
+    stmt = select(func.count(UserGame.id)).where(UserGame.user_id == user_id)
+    return int(db.scalar(stmt) or 0)
 
 
 def update_user_bgg_username(db: Session, *, user: User, bgg_username: str) -> None:

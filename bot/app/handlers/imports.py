@@ -101,17 +101,18 @@ async def _run_import(
         return
 
     await message.answer(
-        "\n".join(
-            [
-                f"Импорт завершен для `{result['bgg_username']}`.",
-                f"Обработано игр: {result['processed_games']}",
-                f"Новых карточек игр: {result['created_games']}",
-                f"Обновлено карточек: {result['updated_games']}",
-                f"Добавлено в твою коллекцию: {result['linked_games']}",
-            ]
-        ),
+        _format_import_summary(result),
         parse_mode="Markdown",
         reply_markup=get_main_menu_keyboard(),
+    )
+
+
+def _format_import_summary(result: dict) -> str:
+    return "\n".join(
+        [
+            f"Импорт завершен для `{result['bgg_username']}`.",
+            f"Сейчас в твоей коллекции: {result['collection_games_count']} игр.",
+        ]
     )
 
 

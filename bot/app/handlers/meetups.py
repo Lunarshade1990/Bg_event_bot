@@ -5,6 +5,7 @@ from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
+from typing import cast
 
 from backend.app.core.config import get_settings
 from bot.app.keyboards.main_menu import get_main_menu_keyboard
@@ -208,7 +209,11 @@ async def receive_meetup_comment(message: Message, state: FSMContext) -> None:
 
     await state.clear()
     if telegram_chat_id and telegram_thread_id:
-        sent = await message.bot.send_message(
+        bot = message.bot
+        if bot is None:
+            await message.answer("Не удалось отправить сообщение в тему.")
+            return
+        sent = await bot.send_message(
             chat_id=telegram_chat_id,
             message_thread_id=telegram_thread_id,
             text=_format_group_meetup_card(meetup),
@@ -244,7 +249,7 @@ async def list_meetups_callback(callback: CallbackQuery) -> None:
         await callback.answer("Не удалось обновить список.", show_alert=True)
         return
 
-    await _send_meetups_list(message, edit_message=True)
+    await _send_meetups_list(cast(Message, message), edit_message=True)
     await callback.answer()
 
 
@@ -326,7 +331,8 @@ async def confirm_delete_meetup(callback: CallbackQuery) -> None:
         await callback.answer("Не удалось открыть подтверждение.", show_alert=True)
         return
 
-    await message.edit_text(
+    msg = cast(Message, message)
+    await msg.edit_text(
         "Удалить встречу? Это действие нельзя отменить.",
         reply_markup=get_meetup_delete_confirm_keyboard(meetup_id),
     )
@@ -364,7 +370,8 @@ async def delete_meetup(callback: CallbackQuery) -> None:
 
     message = callback.message
     if message is not None:
-        await message.edit_text("Встреча удалена.")
+        msg = cast(Message, message)
+        await msg.edit_text("Встреча удалена.")
     await callback.answer("Встреча удалена.")
 
 
@@ -421,6 +428,7 @@ async def _render_meetup_details(callback: CallbackQuery, meetup_id: int) -> Non
     if message is None:
         await callback.answer("Не удалось открыть встречу.", show_alert=True)
         return
+    msg = cast(Message, message)
 
     user = callback.from_user
     backend_client = BackendAPIClient()
@@ -441,7 +449,7 @@ async def _render_meetup_details(callback: CallbackQuery, meetup_id: int) -> Non
 
     is_group_context = message.chat.type in {"group", "supergroup"}
     if is_group_context:
-        await message.edit_text(
+        await msg.edit_text(
             _format_group_meetup_card(meetup),
             parse_mode="HTML",
             reply_markup=_build_group_keyboard_for_user(meetup, telegram_id=user.id),
@@ -449,7 +457,7 @@ async def _render_meetup_details(callback: CallbackQuery, meetup_id: int) -> Non
     else:
         joined_user_ids = {participant["telegram_id"] for participant in meetup["participants"]}
         can_join = user.id not in joined_user_ids and len(meetup["participants"]) < meetup["capacity_total"]
-        await message.edit_text(
+        await msg.edit_text(
             _format_meetup_details(meetup),
             parse_mode="HTML",
             reply_markup=get_meetup_detail_keyboard(

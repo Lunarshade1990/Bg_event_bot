@@ -1,6 +1,7 @@
 from html import escape
 
 import httpx
+import logging
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
@@ -100,12 +101,26 @@ async def on_my_chat_member(event: ChatMemberUpdated, bot: Bot) -> None:
         return
 
     backend_client = BackendAPIClient()
-    await _ensure_forum_topic_thread_id(
+    thread_id = await _ensure_forum_topic_thread_id(
         bot=bot,
         chat_id=chat.id,
         topic_name=topic_name,
         backend_client=backend_client,
     )
+    if thread_id is None:
+        logger = logging.getLogger(__name__)
+        logger.warning("Failed to ensure forum topic for chat %s", chat.id)
+        try:
+            await bot.send_message(
+                chat.id,
+                (
+                    "Не удалось автоматически создать тему для встреч. "
+                    "Проверьте, что в группе включены Topics и у бота есть право "
+                    "manage topics (админ с соответствующим правом)."
+                ),
+            )
+        except Exception:
+            logger.exception("Failed to send failure notification to chat %s", chat.id)
 
 
 @router.message(F.text == "Назад")

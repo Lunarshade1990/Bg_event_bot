@@ -1,3 +1,4 @@
+from collections import defaultdict
 from html import escape
 
 import httpx
@@ -12,6 +13,8 @@ from bot.app.keyboards.games import (
 from bot.app.services.backend_api import BackendAPIClient
 
 router = Router(name="games")
+
+BACKEND_GAMES_BATCH_SIZE = 100
 
 
 @router.message(F.text == "Мои игры")
@@ -88,11 +91,7 @@ async def _render_my_games_page(
         return True
 
     try:
-        games = await backend_client.list_games(
-            owner_id=profile["id"],
-            limit=MY_GAMES_PAGE_SIZE + 1,
-            offset=offset,
-        )
+        owned_games = await _load_owned_games(backend_client, owner_id=profile["id"])
     except httpx.HTTPError:
         await _send_games_message(
             message=message,
@@ -101,10 +100,12 @@ async def _render_my_games_page(
         )
         return True
 
-    if not games and offset > 0:
+    grouped_entries = _group_owned_games(owned_games)
+
+    if not grouped_entries and offset > 0:
         return False
 
-    if not games:
+    if not grouped_entries:
         await _send_games_message(
             message=message,
             text=(
@@ -115,9 +116,12 @@ async def _render_my_games_page(
         )
         return True
 
-    visible_games = games[:MY_GAMES_PAGE_SIZE]
-    has_next_page = len(games) > MY_GAMES_PAGE_SIZE
-    text = _format_my_games_text(visible_games, offset=offset)
+    visible_entries = grouped_entries[offset : offset + MY_GAMES_PAGE_SIZE]
+    if not visible_entries and offset > 0:
+        return False
+
+    has_next_page = offset + MY_GAMES_PAGE_SIZE < len(grouped_entries)
+    text = _format_my_games_text(visible_entries, offset=offset)
     keyboard = get_my_games_keyboard(
         offset=offset,
         page_size=MY_GAMES_PAGE_SIZE,
@@ -130,6 +134,94 @@ async def _render_my_games_page(
         reply_markup=keyboard,
     )
     return True
+
+
+async def _load_owned_games(
+    backend_client: BackendAPIClient,
+    *,
+    owner_id: int,
+) -> list[dict]:
+    games: list[dict] = []
+    offset = 0
+
+    while True:
+        batch = await backend_client.list_games(
+            owner_id=owner_id,
+            limit=BACKEND_GAMES_BATCH_SIZE,
+            offset=offset,
+        )
+        games.extend(batch)
+        if len(batch) < BACKEND_GAMES_BATCH_SIZE:
+            return games
+        offset += BACKEND_GAMES_BATCH_SIZE
+
+
+def _group_owned_games(games: list[dict]) -> list[dict]:
+    base_games_by_bgg_id = {
+        game["bgg_id"]: game
+        for game in games
+        if game.get("game_type") == "base"
+    }
+    owned_expansions_by_base_id: dict[int, list[dict]] = defaultdict(list)
+    attached_expansion_ids: set[int] = set()
+
+    for game in games:
+        if game.get("game_type") != "expansion":
+            continue
+
+        matched_base_games = _match_owned_base_games(
+            game,
+            base_games_by_bgg_id=base_games_by_bgg_id,
+        )
+        if len(matched_base_games) != 1:
+            continue
+
+        base_game = matched_base_games[0]
+        owned_expansions_by_base_id[base_game["id"]].append(game)
+        attached_expansion_ids.add(game["id"])
+
+    entries: list[dict] = []
+    for game in games:
+        if game.get("game_type") == "base":
+            expansions = sorted(
+                owned_expansions_by_base_id.get(game["id"], []),
+                key=lambda item: item["title"].lower(),
+            )
+            entries.append(_build_grouped_entry(game, expansions))
+            continue
+
+        if game["id"] not in attached_expansion_ids:
+            entries.append(_build_grouped_entry(game, []))
+
+    return entries
+
+
+def _match_owned_base_games(
+    game: dict,
+    *,
+    base_games_by_bgg_id: dict[int, dict],
+) -> list[dict]:
+    matched_base_games: list[dict] = []
+    for base_bgg_id in game.get("bgg_expands_ids_cached") or []:
+        base_game = base_games_by_bgg_id.get(base_bgg_id)
+        if base_game is not None:
+            matched_base_games.append(base_game)
+    return matched_base_games
+
+
+def _build_grouped_entry(game: dict, expansions: list[dict]) -> dict:
+    display_max_players = game["max_players"]
+    if game.get("game_type") == "base":
+        for expansion in expansions:
+            extra_players = max(expansion["max_players"] - game["max_players"], 0)
+            display_max_players += extra_players
+
+    return {
+        "game": game,
+        "expansions": expansions,
+        "display_min_players": game["min_players"],
+        "display_max_players": display_max_players,
+    }
 
 
 async def _send_games_message(
@@ -156,19 +248,20 @@ async def _send_games_message(
     )
 
 
-def _format_my_games_text(games: list[dict], *, offset: int) -> str:
+def _format_my_games_text(entries: list[dict], *, offset: int) -> str:
     page_number = offset // MY_GAMES_PAGE_SIZE + 1
     lines = ["<b>Мои игры</b>", f"Страница {page_number}", ""]
 
-    for index, game in enumerate(games, start=offset + 1):
-        lines.append(_format_game_line(index=index, game=game))
+    for index, entry in enumerate(entries, start=offset + 1):
+        lines.append(_format_grouped_game_line(index=index, entry=entry))
 
     return "\n\n".join(lines)
 
 
-def _format_game_line(*, index: int, game: dict) -> str:
+def _format_grouped_game_line(*, index: int, entry: dict) -> str:
+    game = entry["game"]
     title = escape(game["title"])
-    players = _format_players(game["min_players"], game["max_players"])
+    players = _format_players(entry["display_min_players"], entry["display_max_players"])
     duration = _format_duration(game.get("play_time_minutes"))
     game_type = "База" if game.get("game_type") == "base" else "Дополнение"
     tags = [game_type]
@@ -178,11 +271,19 @@ def _format_game_line(*, index: int, game: dict) -> str:
 
     details = ", ".join([players, duration, *tags])
     author = game.get("author")
+    lines = [f"{index}. <b>{title}</b>"]
 
     if author:
-        return f"{index}. <b>{title}</b>\nАвтор: {escape(author)}\n{details}"
+        lines.append(f"Автор: {escape(author)}")
 
-    return f"{index}. <b>{title}</b>\n{details}"
+    lines.append(details)
+
+    expansions = entry["expansions"]
+    if expansions:
+        expansion_titles = ", ".join(escape(expansion["title"]) for expansion in expansions)
+        lines.append(f"Допы: {expansion_titles}")
+
+    return "\n".join(lines)
 
 
 def _format_players(min_players: int, max_players: int) -> str:

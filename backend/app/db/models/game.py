@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Enum, Identity, Integer, JSON, String, Text
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Enum,
+    Identity,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.db.base import Base, TimestampMixin
@@ -44,7 +54,8 @@ class Game(TimestampMixin, Base):
         default=CampaignSource.UNKNOWN,
         nullable=False,
     )
+    bgg_expands_ids_cached: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
     bgg_raw_mechanics_cached: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
 
-    user_games: Mapped[list["UserGame"]] = relationship(back_populates="game")
-    meetup_games: Mapped[list["MeetupGame"]] = relationship(back_populates="game")
+    user_games: Mapped[list[UserGame]] = relationship(back_populates="game")
+    meetup_games: Mapped[list[MeetupGame]] = relationship(back_populates="game")

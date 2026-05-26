@@ -68,6 +68,11 @@ class FakeCollectionItem:
         return bool(int(self._data.get("wishlist", 0)))
 
 
+class FakeRelatedGame:
+    def __init__(self, game_id: int) -> None:
+        self.id = game_id
+
+
 class FakeGameDetails:
     def __init__(
         self,
@@ -79,6 +84,7 @@ class FakeGameDetails:
         image: str,
         designers: list[str],
         mechanics: list[str],
+        expands: list[FakeRelatedGame] | None = None,
     ) -> None:
         self.name = name
         self.min_players = min_players
@@ -90,6 +96,7 @@ class FakeGameDetails:
         self.thumbnail = image
         self.designers = designers
         self.mechanics = mechanics
+        self.expands = expands or []
 
 
 class FakeBGGClient:
@@ -111,6 +118,7 @@ class FakeBGGClient:
                 image="https://example.com/gloomhaven.jpg",
                 designers=["Isaac Childres"],
                 mechanics=["Campaign Game", "Hand Management"],
+                expands=[],
             )
         if game_id == 1003:
             return FakeGameDetails(
@@ -121,6 +129,7 @@ class FakeBGGClient:
                 image="https://example.com/no-status.jpg",
                 designers=["Unknown Designer"],
                 mechanics=[],
+                expands=[],
             )
         return FakeGameDetails(
             name="Forgotten Circles",
@@ -130,6 +139,7 @@ class FakeBGGClient:
             image="https://example.com/forgotten-circles.jpg",
             designers=["Isaac Childres", "Marcel Cwertetsck"],
             mechanics=["Campaign Game"],
+            expands=[FakeRelatedGame(1001)],
         )
 
 
@@ -165,10 +175,12 @@ def test_import_bgg_collection_creates_games_and_ownership(
     imported_games = db_session.query(Game).filter(Game.bgg_id.in_([1001, 1002, 1003])).count()
     imported_links = db_session.query(UserGame).filter(UserGame.user_id == user.id).count()
     import_jobs = db_session.query(BggImportJob).filter(BggImportJob.user_id == user.id).count()
+    expansion = db_session.query(Game).filter(Game.bgg_id == 1002).one()
 
     assert imported_games == 3
     assert imported_links == 3
     assert import_jobs == 1
+    assert expansion.bgg_expands_ids_cached == [1001]
 
 
 def test_import_bgg_collection_removes_missing_bgg_owned_games(
@@ -233,6 +245,7 @@ def test_import_bgg_collection_removes_missing_bgg_owned_games(
                 image="https://example.com/game.jpg",
                 designers=["Designer"],
                 mechanics=[],
+                expands=[FakeRelatedGame(2001)] if game_id == 2002 else [],
             )
 
     monkeypatch.setattr("backend.app.services.bgg_import.get_bgg_client", lambda: FakeSyncClient())

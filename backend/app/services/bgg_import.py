@@ -36,6 +36,19 @@ def _extract_has_campaign(game_details) -> tuple[bool, CampaignSource]:
     return "Campaign Game" in mechanics, CampaignSource.BGG
 
 
+def _extract_expands_bgg_ids(game_details) -> list[int]:
+    expands = getattr(game_details, "expands", []) or []
+    expand_ids: list[int] = []
+
+    for expanded_game in expands:
+        expanded_game_id = getattr(expanded_game, "id", None)
+        if expanded_game_id is None:
+            continue
+        expand_ids.append(int(expanded_game_id))
+
+    return list(dict.fromkeys(expand_ids))
+
+
 def _upsert_game_from_bgg(
     db: Session,
     *,
@@ -62,6 +75,7 @@ def _upsert_game_from_bgg(
     designers = getattr(game_details, "designers", []) or []
     author = ", ".join(designers) if designers else None
     has_campaign, campaign_source = _extract_has_campaign(game_details)
+    expands_bgg_ids = _extract_expands_bgg_ids(game_details)
     mechanics = list(getattr(game_details, "mechanics", []) or [])
     normalized_type = _normalize_game_type(subtype)
 
@@ -78,6 +92,7 @@ def _upsert_game_from_bgg(
             game_type=normalized_type,
             has_campaign=has_campaign,
             campaign_source=campaign_source,
+            bgg_expands_ids_cached=expands_bgg_ids,
             bgg_raw_mechanics_cached=mechanics,
         )
         db.add(game)
@@ -93,6 +108,7 @@ def _upsert_game_from_bgg(
         "play_time_minutes": play_time,
         "image_url": image_url,
         "game_type": normalized_type,
+        "bgg_expands_ids_cached": expands_bgg_ids,
         "bgg_raw_mechanics_cached": mechanics,
     }
 

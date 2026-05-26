@@ -18,6 +18,7 @@ class GameRead(BaseModel):
     game_type: GameType
     has_campaign: bool
     campaign_source: CampaignSource
+    bgg_expands_ids_cached: list[int] | None
 
 
 class GameOwnerRead(BaseModel):

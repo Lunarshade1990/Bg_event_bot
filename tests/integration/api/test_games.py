@@ -145,6 +145,7 @@ def test_list_games_filters_by_owner_with_pagination(
             "game_type": "base",
             "has_campaign": False,
             "campaign_source": "unknown",
+            "bgg_expands_ids_cached": None,
         }
     ]
 

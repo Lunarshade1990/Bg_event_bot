@@ -1,12 +1,13 @@
 import logging
 from html import escape
 from typing import cast
+from types import SimpleNamespace
 
 import httpx
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
+from aiogram.types import CallbackQuery, ChatMemberUpdated, Message, InlineKeyboardButton, InlineKeyboardMarkup
 
 from backend.app.core.config import get_settings
 from bot.app.keyboards.main_menu import get_main_menu_keyboard
@@ -243,12 +244,8 @@ async def receive_meetup_date(message: Message, state: FSMContext) -> None:
 
     await state.update_data(scheduled_at=parsed.isoformat(), selected_games=[], selected_game_ids=[])
     await state.set_state(CreateMeetupStates.waiting_for_game_group)
-    await _send_creation_prompt(
-        message,
-        state,
-        "Выбери диапазон букв, по первой букве названия игры:",
-        reply_markup=get_game_group_keyboard(),
-    )
+    await _record_creation_message(state, message.message_id)
+    await _show_dynamic_letter_groups(cast(CallbackQuery, SimpleNamespace(message=message, from_user=message.from_user)), state)
 
 
 @router.message(CreateMeetupStates.waiting_for_capacity)
@@ -377,12 +374,7 @@ async def back_create_meetup(callback: CallbackQuery, state: FSMContext) -> None
     if current_state == CreateMeetupStates.waiting_for_game_selection.state:
         # Go back to group selection from game list
         await state.set_state(CreateMeetupStates.waiting_for_game_group)
-        await _edit_creation_prompt(
-            callback,
-            state,
-            "Выбери диапазон букв, по первой букве названия игры:",
-            reply_markup=get_game_group_keyboard(),
-        )
+        await _show_dynamic_letter_groups(callback, state)
         return
 
     if current_state == CreateMeetupStates.waiting_for_game_group.state:
@@ -417,12 +409,7 @@ async def back_create_meetup(callback: CallbackQuery, state: FSMContext) -> None
             )
             return
         await state.set_state(CreateMeetupStates.waiting_for_game_group)
-        await _edit_creation_prompt(
-            callback,
-            state,
-            "Выбери диапазон букв, по первой букве названия игры:",
-            reply_markup=get_game_group_keyboard(),
-        )
+        await _show_dynamic_letter_groups(callback, state)
         return
 
     if current_state == CreateMeetupStates.waiting_for_comment.state:
@@ -929,70 +916,27 @@ async def select_game_group(callback: CallbackQuery, state: FSMContext) -> None:
         return
     group = parts[1]
 
-    groups_map = {
-        "A-G": [chr(c) for c in range(ord("A"), ord("G") + 1)],
-        "H-N": [chr(c) for c in range(ord("H"), ord("N") + 1)],
-        "O-U": [chr(c) for c in range(ord("O"), ord("U") + 1)],
-        "V-Z": [chr(c) for c in range(ord("V"), ord("Z") + 1)],
-        "RU": [
-            "А",
-            "Б",
-            "В",
-            "Г",
-            "Д",
-            "Е",
-            "Ж",
-            "З",
-            "И",
-            "К",
-            "Л",
-            "М",
-            "Н",
-            "О",
-            "П",
-            "Р",
-            "С",
-            "Т",
-            "У",
-            "Ф",
-            "Х",
-            "Ц",
-            "Ч",
-            "Ш",
-            "Щ",
-            "Э",
-            "Ю",
-            "Я",
-        ],
-    }
+    # group is an index into previously stored letter_groups
+    data = await state.get_data()
+    letter_groups = data.get("letter_groups") or []
+    try:
+        idx = int(group)
+    except ValueError:
+        await callback.answer("Некорректный выбор группы.", show_alert=True)
+        return
 
-    letters = groups_map.get(group)
-    if letters is None:
+    if idx < 0 or idx >= len(letter_groups):
         await callback.answer("Неизвестная группа.", show_alert=True)
         return
 
-    # Filter letters: only show letters that have games
-    backend_client = BackendAPIClient()
-    available_letters = []
-    for letter in letters:
-        try:
-            games = await backend_client.list_games(title=letter, game_type="base", limit=1)  # just check if any exist
-            if games:
-                available_letters.append(letter)
-        except httpx.HTTPError:
-            pass  # skip letter on error
-
-    if not available_letters:
-        await callback.answer("Нет доступных игр в этой группе.", show_alert=True)
-        return
-
-    await state.update_data(current_game_group=group)
-    await state.set_state(CreateMeetupStates.waiting_for_game_group)
+    letters = letter_groups[idx]
+    # store current selection context
+    await state.update_data(current_game_group=idx, current_game_letter=None)
     await _edit_creation_prompt(
         callback,
         state,
         "Выбери первую букву:",
-        reply_markup=get_letters_keyboard(available_letters),
+        reply_markup=get_letters_keyboard(letters),
     )
 
 
@@ -1005,22 +949,21 @@ async def select_game_letter(callback: CallbackQuery, state: FSMContext) -> None
         return
     letter = parts[1]
 
-    backend_client = BackendAPIClient()
+    # Retrieve games for this letter from state-built letters_map
+    data = await state.get_data()
+    letters_map = data.get("letters_map") or {}
+    games_for_letter = letters_map.get(letter) or []
+
+    # paginate locally
     page = 0
     page_size = 8
-
-    try:
-        games = await backend_client.list_games(title=letter, game_type="base", limit=page_size, offset=page * page_size)
-    except httpx.HTTPError:
-        await callback.answer("Не удалось загрузить список игр.", show_alert=True)
-        return
-
-    # Filter by starting letter (case-insensitive)
-    filtered = [g for g in games if (g.get("title") or "").upper().startswith(letter.upper())]
-    has_more = len(games) == page_size
+    start = page * page_size
+    end = start + page_size
+    page_games = games_for_letter[start:end]
+    has_more = end < len(games_for_letter)
 
     # Save available page games info to state so toggle can access metadata
-    await state.update_data(current_game_letter=letter, current_game_page=page, available_games={str(g.get("id")): {"id": g.get("id"), "title": g.get("title"), "min_players": g.get("min_players"), "max_players": g.get("max_players")} for g in filtered})
+    await state.update_data(current_game_letter=letter, current_game_page=page, available_games={str(g.get("id")): {"id": g.get("id"), "title": g.get("title"), "min_players": g.get("min_players"), "max_players": g.get("max_players")} for g in page_games})
     current_selected = await state.get_data()
     selected_ids = set(current_selected.get("selected_game_ids") or [])
 
@@ -1028,7 +971,7 @@ async def select_game_letter(callback: CallbackQuery, state: FSMContext) -> None
         callback,
         state,
         f"Игры на букву {letter} (страница {page+1}):",
-        reply_markup=get_games_list_keyboard(filtered, selected_ids, page, has_more),
+        reply_markup=get_games_list_keyboard(page_games, selected_ids, page, has_more),
     )
 
 
@@ -1277,6 +1220,71 @@ async def _edit_creation_prompt(
     answer = getattr(callback, "answer", None)
     if callable(answer):
         await callback.answer()
+
+
+async def _show_dynamic_letter_groups(callback: CallbackQuery, state: FSMContext) -> None:
+    """Build letter groups from user's games and show either letters or groups."""
+    backend_client = BackendAPIClient()
+    profile = await _ensure_profile_for_user_callback(callback, backend_client=backend_client)
+    if profile is None:
+        return
+
+    # Fetch all base games for the user (paginated)
+    all_games: list[dict] = []
+    limit = 200
+    offset = 0
+    while True:
+        try:
+            batch = await backend_client.list_games(owner_id=profile["id"], game_type="base", limit=limit, offset=offset)
+        except httpx.HTTPError:
+            await callback.answer("Не удалось загрузить список игр.", show_alert=True)
+            return
+        if not batch:
+            break
+        all_games.extend(batch)
+        if len(batch) < limit:
+            break
+        offset += limit
+
+    # Build letters map
+    letters_map: dict[str, list[dict]] = {}
+    for g in all_games:
+        title = (g.get("title") or "").strip()
+        if not title:
+            continue
+        first = title[0].upper()
+        if not first.isalpha():
+            continue
+        letters_map.setdefault(first, []).append(g)
+
+    all_letters = sorted(letters_map.keys())
+    if not all_letters:
+        await callback.answer("У вас нет игр для выбора.", show_alert=True)
+        return
+
+    # If few letters, show them directly; otherwise chunk into groups of 6
+    await state.update_data(letters_map=letters_map)
+    if len(all_letters) <= 5:
+        await state.update_data(letter_groups=None)
+        await _edit_creation_prompt(
+            callback,
+            state,
+            "Выбери первую букву:",
+            reply_markup=get_letters_keyboard(all_letters),
+        )
+        return
+
+    # chunk letters into groups of 6
+    groups: list[list[str]] = [all_letters[i : i + 6] for i in range(0, len(all_letters), 6)]
+    await state.update_data(letter_groups=groups)
+
+    # build keyboard with group buttons
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, grp in enumerate(groups):
+        label = f"{grp[0]}-{grp[-1]}" if len(grp) > 1 else grp[0]
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"{MEETUP_GAME_GROUP_CALLBACK_PREFIX}:{idx}")])
+    rows.append([InlineKeyboardButton(text="Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK)])
+    await _edit_creation_prompt(callback, state, "Выбери диапазон букв:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 def _is_group_creation(*, data: dict, message: Message) -> bool:

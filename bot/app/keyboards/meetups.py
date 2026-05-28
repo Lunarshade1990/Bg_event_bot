@@ -183,7 +183,7 @@ def get_letters_keyboard(letters: list[str]) -> InlineKeyboardMarkup:
     row: list[InlineKeyboardButton] = []
     for i, ch in enumerate(letters):
         row.append(InlineKeyboardButton(text=ch, callback_data=f"{MEETUP_GAME_LETTER_CALLBACK_PREFIX}:{ch}"))
-        if (i + 1) % 6 == 0:
+        if (i + 1) % 3 == 0:
             rows.append(row)
             row = []
     if row:

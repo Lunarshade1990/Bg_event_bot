@@ -3,6 +3,7 @@ from html import escape
 from typing import cast
 from types import SimpleNamespace
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.exceptions import TelegramBadRequest, TelegramAPIError
 
 import httpx
 from aiogram import Bot, F, Router
@@ -1225,8 +1226,15 @@ async def _edit_creation_prompt(
         return
 
     msg = cast(Message, message)
-    await msg.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
-    message_id = getattr(msg, "message_id", None)
+    message_id = None
+    try:
+        await msg.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
+        message_id = getattr(msg, "message_id", None)
+    except (TelegramBadRequest, TelegramAPIError):
+        # Fallback: send a new message if editing is not allowed
+        prompt = await msg.answer(text, parse_mode="HTML", reply_markup=reply_markup)
+        message_id = getattr(prompt, "message_id", None)
+
     if message_id is not None:
         await _record_creation_message(state, message_id)
     await state.update_data(creation_prompt_message_id=message_id)

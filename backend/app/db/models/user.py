@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from backend.app.db.models.meetup import Meetup
     from backend.app.db.models.meetup_game import MeetupGame
     from backend.app.db.models.meetup_participant import MeetupParticipant
+    from backend.app.db.models.telegram_chat_member import TelegramChatMember
     from backend.app.db.models.user_game import UserGame
 
 
@@ -32,4 +33,8 @@ class User(TimestampMixin, Base):
     created_meetups: Mapped[list["Meetup"]] = relationship(back_populates="creator")
     meetup_games_added: Mapped[list["MeetupGame"]] = relationship(back_populates="added_by_user")
     meetup_participations: Mapped[list["MeetupParticipant"]] = relationship(back_populates="user")
+    telegram_chat_memberships: Mapped[list["TelegramChatMember"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
     bgg_import_jobs: Mapped[list["BggImportJob"]] = relationship(back_populates="user")

@@ -12,6 +12,7 @@ from backend.app.core.config import get_settings
 from bot.app.keyboards.main_menu import get_main_menu_keyboard
 from bot.app.keyboards.meetups import (
     MEETUP_CALLBACK_PREFIX,
+    MEETUP_CHAT_SELECTION_CALLBACK_PREFIX,
     MEETUP_CREATE_BACK_CALLBACK,
     MEETUP_CREATE_CANCEL_CALLBACK,
     MEETUP_CREATE_CONFIRM_CALLBACK,
@@ -24,6 +25,7 @@ from bot.app.keyboards.meetups import (
     get_create_meetup_confirm_keyboard,
     get_create_meetup_step_keyboard,
     get_group_meetup_keyboard,
+    get_meetup_chat_selection_keyboard,
     get_meetup_delete_confirm_keyboard,
     get_meetup_detail_keyboard,
     get_meetups_list_keyboard,
@@ -78,6 +80,18 @@ async def start_group_meetup(message: Message, state: FSMContext) -> None:
             "Проверь, что включены Topics и у бота есть право manage topics."
         )
         return
+
+    profile = await _ensure_profile_for_user(message, backend_client=backend_client)
+    if profile is not None:
+        try:
+            await backend_client.register_telegram_chat_membership(
+                user_id=profile["id"],
+                telegram_chat_id=target_chat_id,
+                telegram_thread_id=target_thread_id,
+                title=chat.title,
+            )
+        except httpx.HTTPError:
+            pass
 
     await state.clear()
     await state.update_data(
@@ -145,11 +159,51 @@ async def start_create_meetup(message: Message, state: FSMContext) -> None:
 
     await state.clear()
     await _record_creation_message(state, message.message_id)
+    if message.chat.type == "private":
+        await _start_private_chat_meetup_creation(message, state)
+        return
+
     await state.set_state(CreateMeetupStates.waiting_for_date)
     await _send_creation_prompt(
         message,
         state,
         _get_date_prompt_text(group_mode=False),
+        reply_markup=get_create_meetup_step_keyboard(can_go_back=False),
+    )
+
+
+@router.callback_query(F.data.startswith(f"{MEETUP_CHAT_SELECTION_CALLBACK_PREFIX}:"))
+async def select_meetup_chat(callback: CallbackQuery, state: FSMContext) -> None:
+    telegram_chat_id = _parse_chat_id(callback.data, MEETUP_CHAT_SELECTION_CALLBACK_PREFIX)
+    if telegram_chat_id is None:
+        await callback.answer("Некорректный выбор чата.", show_alert=True)
+        return
+
+    backend_client = BackendAPIClient()
+    profile = await _ensure_profile_for_user_callback(callback, backend_client=backend_client)
+    if profile is None:
+        return
+
+    try:
+        topic = await backend_client.get_telegram_topic(telegram_chat_id)
+    except httpx.HTTPError:
+        await callback.answer("Не удалось загрузить информацию о чате.", show_alert=True)
+        return
+
+    if topic is None:
+        await callback.answer("Выбранный чат не зарегистрирован.", show_alert=True)
+        return
+
+    await state.update_data(
+        group_mode=True,
+        telegram_chat_id=topic["telegram_chat_id"],
+        telegram_thread_id=topic["telegram_thread_id"],
+    )
+    await state.set_state(CreateMeetupStates.waiting_for_date)
+    await _edit_creation_prompt(
+        callback,
+        state,
+        _get_date_prompt_text(group_mode=True),
         reply_markup=get_create_meetup_step_keyboard(can_go_back=False),
     )
 
@@ -736,6 +790,72 @@ def _get_comment_prompt_text() -> str:
     return "Добавь комментарий к встрече или нажми «Пропустить»."
 
 
+async def _start_private_chat_meetup_creation(message: Message, state: FSMContext) -> None:
+    backend_client = BackendAPIClient()
+    profile = await _ensure_profile_for_user(message, backend_client=backend_client)
+    if profile is None:
+        return
+
+    try:
+        chat_topics = await backend_client.list_telegram_chat_memberships(user_id=profile["id"])
+    except httpx.HTTPError:
+        await message.answer("Не удалось загрузить список зарегистрированных чатов.")
+        return
+
+    if not chat_topics:
+        await message.answer(
+            "У тебя нет зарегистрированных чатов для создания встречи. "
+            "Зайди в нужный чат и нажми /meetup, чтобы связать чат с твоим профилем.",
+            reply_markup=get_meetups_menu_keyboard(),
+        )
+        return
+
+    if len(chat_topics) == 1:
+        topic = chat_topics[0]
+        await state.update_data(
+            group_mode=True,
+            telegram_chat_id=topic["telegram_chat_id"],
+            telegram_thread_id=topic["telegram_thread_id"],
+        )
+        await state.set_state(CreateMeetupStates.waiting_for_date)
+        await _send_creation_prompt(
+            message,
+            state,
+            _get_date_prompt_text(group_mode=True),
+            reply_markup=get_create_meetup_step_keyboard(can_go_back=False),
+        )
+        return
+
+    await state.set_state(CreateMeetupStates.waiting_for_chat_selection)
+    await _send_creation_prompt(
+        message,
+        state,
+        _get_chat_selection_prompt_text(),
+        reply_markup=get_meetup_chat_selection_keyboard(chat_topics),
+    )
+
+
+def _get_chat_selection_prompt_text() -> str:
+    return "Выбери чат, в котором создать встречу."
+
+
+def _parse_chat_id(callback_data: str | None, prefix: str) -> int | None:
+    if callback_data is None:
+        return None
+    expected_prefix = f"{prefix}:"
+    if not callback_data.startswith(expected_prefix):
+        return None
+    raw_value = callback_data[len(expected_prefix) :]
+    if not raw_value:
+        return None
+    if raw_value[0] == "-":
+        if raw_value[1:].isdigit():
+            return int(raw_value)
+    elif raw_value.isdigit():
+        return int(raw_value)
+    return None
+
+
 def _format_create_meetup_confirmation(
     *,
     scheduled_at: str,
@@ -929,8 +1049,18 @@ async def _ensure_forum_topic_thread_id(
     if thread_id is None:
         return None
     _topic_thread_cache[chat_id] = thread_id
+    chat_title = None
     try:
-        await backend_client.upsert_telegram_topic(chat_id, telegram_thread_id=thread_id)
+        chat_info = await bot.get_chat(chat_id)
+        chat_title = getattr(chat_info, "title", None)
+    except Exception:
+        chat_title = None
+    try:
+        await backend_client.upsert_telegram_topic(
+            chat_id,
+            telegram_thread_id=thread_id,
+            title=chat_title,
+        )
     except httpx.HTTPError:
         logger.exception("Failed to save forum topic %s for chat %s", thread_id, chat_id)
     return thread_id

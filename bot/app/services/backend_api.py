@@ -139,13 +139,50 @@ class BackendAPIClient:
             response.raise_for_status()
             return response.json()
 
-    async def upsert_telegram_topic(self, telegram_chat_id: int, *, telegram_thread_id: int) -> dict:
+    async def upsert_telegram_topic(
+        self,
+        telegram_chat_id: int,
+        *,
+        telegram_thread_id: int,
+        title: str | None = None,
+    ) -> dict:
         payload = {
             "telegram_chat_id": telegram_chat_id,
             "telegram_thread_id": telegram_thread_id,
+            "title": title,
         }
+        filtered_payload = {key: value for key, value in payload.items() if value is not None}
         async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
-            response = await client.post("/api/meetups/telegram-topics", json=payload)
+            response = await client.post("/api/meetups/telegram-topics", json=filtered_payload)
+            response.raise_for_status()
+            return response.json()
+
+    async def register_telegram_chat_membership(
+        self,
+        *,
+        user_id: int,
+        telegram_chat_id: int,
+        telegram_thread_id: int,
+        title: str | None = None,
+    ) -> dict:
+        payload = {
+            "user_id": user_id,
+            "telegram_chat_id": telegram_chat_id,
+            "telegram_thread_id": telegram_thread_id,
+            "title": title,
+        }
+        filtered_payload = {key: value for key, value in payload.items() if value is not None}
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.post(
+                "/api/meetups/telegram-chat-memberships",
+                json=filtered_payload,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def list_telegram_chat_memberships(self, user_id: int) -> list[dict]:
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.get(f"/api/meetups/telegram-chat-memberships/users/{user_id}")
             response.raise_for_status()
             return response.json()
 

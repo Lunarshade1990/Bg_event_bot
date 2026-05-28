@@ -16,6 +16,7 @@ MEETUP_CREATE_CONFIRM_CALLBACK = "meetup_create:confirm"
 MEETUP_CREATE_BACK_CALLBACK = "meetup_create:back"
 MEETUP_CREATE_CANCEL_CALLBACK = "meetup_create:cancel"
 MEETUP_CREATE_SKIP_COMMENT_CALLBACK = "meetup_create:skip_comment"
+MEETUP_CHAT_SELECTION_CALLBACK_PREFIX = "meetup_chat_select"
 
 
 def get_meetups_menu_keyboard() -> ReplyKeyboardMarkup:
@@ -137,6 +138,23 @@ def get_create_meetup_confirm_keyboard() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def get_meetup_chat_selection_keyboard(chat_topics: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for topic in chat_topics:
+        label = topic["title"] or str(topic["telegram_chat_id"])
+        if len(label) > 50:
+            label = f"{label[:47]}..."
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=label,
+                    callback_data=f"{MEETUP_CHAT_SELECTION_CALLBACK_PREFIX}:{topic['telegram_chat_id']}",
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_meetup_delete_confirm_keyboard(meetup_id: int) -> InlineKeyboardMarkup:

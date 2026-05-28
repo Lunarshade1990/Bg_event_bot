@@ -11,6 +11,7 @@ from backend.app.schemas.meetup import (
     MeetupTelegramMessageRequest,
 )
 from backend.app.schemas.telegram_chat_topic import (
+    TelegramChatMembershipCreateRequest,
     TelegramChatTopicCreateRequest,
     TelegramChatTopicRead,
 )
@@ -64,6 +65,32 @@ def upsert_telegram_chat_topic(
     db: Session = Depends(get_db),
 ) -> TelegramChatTopicRead:
     return telegram_chat_topic_service.upsert_telegram_chat_topic(db, payload)
+
+
+@router.post(
+    "/telegram-chat-memberships",
+    response_model=TelegramChatTopicRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def register_telegram_chat_membership(
+    payload: TelegramChatMembershipCreateRequest,
+    db: Session = Depends(get_db),
+) -> TelegramChatTopicRead:
+    try:
+        return telegram_chat_topic_service.register_telegram_chat_membership(db, payload)
+    except telegram_chat_topic_service.TelegramChatMembershipUserNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get(
+    "/telegram-chat-memberships/users/{user_id}",
+    response_model=list[TelegramChatTopicRead],
+)
+def list_telegram_chat_memberships(
+    user_id: int,
+    db: Session = Depends(get_db),
+) -> list[TelegramChatTopicRead]:
+    return telegram_chat_topic_service.list_telegram_chat_topics_for_user(db, user_id)
 
 
 @router.get("/{meetup_id}", response_model=MeetupRead)

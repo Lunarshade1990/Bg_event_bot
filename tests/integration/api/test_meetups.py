@@ -91,6 +91,33 @@ def test_create_and_get_telegram_chat_topic(
     assert get_response.json() == payload
 
 
+def test_create_and_get_telegram_chat_topic_accepts_negative_group_id(
+    client: TestClient,
+    db_session,
+    api_headers: dict[str, str],
+) -> None:
+    response = client.post(
+        "/api/meetups/telegram-topics",
+        headers=api_headers,
+        json={
+            "telegram_chat_id": -100314159,
+            "telegram_thread_id": 271828,
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["telegram_chat_id"] == -100314159
+    assert payload["telegram_thread_id"] == 271828
+
+    get_response = client.get(
+        "/api/meetups/telegram-topics/-100314159",
+        headers=api_headers,
+    )
+    assert get_response.status_code == 200
+    assert get_response.json() == payload
+
+
 def test_list_and_get_meetup(
     client: TestClient,
     db_session,

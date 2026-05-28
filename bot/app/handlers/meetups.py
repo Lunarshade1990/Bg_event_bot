@@ -900,7 +900,7 @@ async def _ensure_forum_topic_thread_id(
     try:
         await backend_client.upsert_telegram_topic(chat_id, telegram_thread_id=thread_id)
     except httpx.HTTPError:
-        pass
+        logger.exception("Failed to save forum topic %s for chat %s", thread_id, chat_id)
     return thread_id
 
 def _format_meetup_details(meetup: dict) -> str:

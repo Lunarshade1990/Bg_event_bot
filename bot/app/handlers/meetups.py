@@ -21,9 +21,18 @@ from bot.app.keyboards.meetups import (
     MEETUP_DELETE_CONFIRM_CALLBACK_PREFIX,
     MEETUP_JOIN_CALLBACK_PREFIX,
     MEETUP_LEAVE_CALLBACK_PREFIX,
+    MEETUP_GAME_GROUP_CALLBACK_PREFIX,
+    MEETUP_GAME_LETTER_CALLBACK_PREFIX,
+    MEETUP_GAME_PAGE_CALLBACK_PREFIX,
+    MEETUP_GAME_TOGGLE_CALLBACK_PREFIX,
+    MEETUP_GAME_DONE_CALLBACK,
+    MEETUP_GAME_SKIP_CALLBACK,
     get_create_meetup_comment_keyboard,
     get_create_meetup_confirm_keyboard,
     get_create_meetup_step_keyboard,
+    get_game_group_keyboard,
+    get_letters_keyboard,
+    get_games_list_keyboard,
     get_group_meetup_keyboard,
     get_meetup_chat_selection_keyboard,
     get_meetup_delete_confirm_keyboard,
@@ -232,13 +241,13 @@ async def receive_meetup_date(message: Message, state: FSMContext) -> None:
         )
         return
 
-    await state.update_data(scheduled_at=parsed.isoformat())
-    await state.set_state(CreateMeetupStates.waiting_for_capacity)
+    await state.update_data(scheduled_at=parsed.isoformat(), selected_games=[], selected_game_ids=[])
+    await state.set_state(CreateMeetupStates.waiting_for_game_group)
     await _send_creation_prompt(
         message,
         state,
-        _get_capacity_prompt_text(),
-        reply_markup=get_create_meetup_step_keyboard(can_go_back=True),
+        "Выбери диапазон букв, по первой букве названия игры:",
+        reply_markup=get_game_group_keyboard(),
     )
 
 
@@ -365,24 +374,70 @@ async def back_create_meetup(callback: CallbackQuery, state: FSMContext) -> None
     current_state = await state.get_state()
     data = await state.get_data()
 
-    if current_state == CreateMeetupStates.waiting_for_capacity.state:
-        await state.update_data(scheduled_at=None)
+    if current_state == CreateMeetupStates.waiting_for_game_selection.state:
+        # Go back to group selection from game list
+        await state.set_state(CreateMeetupStates.waiting_for_game_group)
+        await _edit_creation_prompt(
+            callback,
+            state,
+            "Выбери диапазон букв, по первой букве названия игры:",
+            reply_markup=get_game_group_keyboard(),
+        )
+        return
+
+    if current_state == CreateMeetupStates.waiting_for_game_group.state:
+        # Go back to date selection
+        await state.update_data(selected_games=None, selected_game_ids=None)
         await state.set_state(CreateMeetupStates.waiting_for_date)
         await _edit_creation_prompt(
             callback,
             state,
-            _get_date_prompt_text(group_mode=bool(data.get("group_mode"))),
-            reply_markup=get_create_meetup_step_keyboard(can_go_back=False),
+            "Когда планируется встреча?",
+            reply_markup=get_create_meetup_step_keyboard(can_go_back=True),
+        )
+        return
+
+    if current_state == CreateMeetupStates.waiting_for_capacity.state:
+        # go back to games selection if user came from there, otherwise to group selection
+        await state.update_data(capacity_total=None)
+        current_letter = data.get("current_game_letter")
+        if current_letter:
+            await state.set_state(CreateMeetupStates.waiting_for_game_selection)
+            # try to reconstruct current page keyboard
+            available = data.get("available_games") or {}
+            page = data.get("current_game_page") or 0
+            selected_ids = set(data.get("selected_game_ids") or [])
+            games = [v for k, v in (available or {}).items()]
+            # games are stored as dicts with id/title
+            await _edit_creation_prompt(
+                callback,
+                state,
+                f"Игры на букву {current_letter} (страница {page+1}):",
+                reply_markup=get_games_list_keyboard(games, selected_ids, page, False),
+            )
+            return
+        await state.set_state(CreateMeetupStates.waiting_for_game_group)
+        await _edit_creation_prompt(
+            callback,
+            state,
+            "Выбери диапазон букв, по первой букве названия игры:",
+            reply_markup=get_game_group_keyboard(),
         )
         return
 
     if current_state == CreateMeetupStates.waiting_for_comment.state:
         await state.update_data(capacity_total=None)
         await state.set_state(CreateMeetupStates.waiting_for_capacity)
+        sel_games = data.get("selected_games") or []
+        max_for_all = None
+        if sel_games:
+            max_vals = [g.get("max_players") for g in sel_games if g.get("max_players") is not None]
+            if max_vals:
+                max_for_all = min(max_vals)
         await _edit_creation_prompt(
             callback,
             state,
-            _get_capacity_prompt_text(),
+            _get_capacity_prompt_text_with_hint(max_for_all),
             reply_markup=get_create_meetup_step_keyboard(can_go_back=True),
         )
         return
@@ -516,7 +571,9 @@ async def list_meetups_callback(callback: CallbackQuery) -> None:
         return
 
     await _send_meetups_list(cast(Message, message), edit_message=True)
-    await callback.answer()
+    answer = getattr(callback, "answer", None)
+    if callable(answer):
+        await callback.answer()
 
 
 @router.callback_query(F.data.startswith(f"{MEETUP_CALLBACK_PREFIX}:"))
@@ -786,6 +843,13 @@ def _get_capacity_prompt_text() -> str:
     return "Сколько всего игроков может участвовать? (число от 1)"
 
 
+def _get_capacity_prompt_text_with_hint(max_for_all: int | None) -> str:
+    base = "Сколько всего игроков может участвовать? (число от 1)"
+    if max_for_all is None:
+        return base
+    return f"{base}\nПодсказка: для выбранных игр максимум, играющий во все игры одновременно: {max_for_all}"
+
+
 def _get_comment_prompt_text() -> str:
     return "Добавь комментарий к встрече или нажми «Пропустить»."
 
@@ -854,6 +918,252 @@ def _parse_chat_id(callback_data: str | None, prefix: str) -> int | None:
     elif raw_value.isdigit():
         return int(raw_value)
     return None
+
+
+@router.callback_query(F.data.startswith(f"{MEETUP_GAME_GROUP_CALLBACK_PREFIX}:"))
+async def select_game_group(callback: CallbackQuery, state: FSMContext) -> None:
+    raw = callback.data or ""
+    parts = raw.split(":", 1)
+    if len(parts) != 2:
+        await callback.answer("Некорректный выбор.", show_alert=True)
+        return
+    group = parts[1]
+
+    groups_map = {
+        "A-G": [chr(c) for c in range(ord("A"), ord("G") + 1)],
+        "H-N": [chr(c) for c in range(ord("H"), ord("N") + 1)],
+        "O-U": [chr(c) for c in range(ord("O"), ord("U") + 1)],
+        "V-Z": [chr(c) for c in range(ord("V"), ord("Z") + 1)],
+        "RU": [
+            "А",
+            "Б",
+            "В",
+            "Г",
+            "Д",
+            "Е",
+            "Ж",
+            "З",
+            "И",
+            "К",
+            "Л",
+            "М",
+            "Н",
+            "О",
+            "П",
+            "Р",
+            "С",
+            "Т",
+            "У",
+            "Ф",
+            "Х",
+            "Ц",
+            "Ч",
+            "Ш",
+            "Щ",
+            "Э",
+            "Ю",
+            "Я",
+        ],
+    }
+
+    letters = groups_map.get(group)
+    if letters is None:
+        await callback.answer("Неизвестная группа.", show_alert=True)
+        return
+
+    # Filter letters: only show letters that have games
+    backend_client = BackendAPIClient()
+    available_letters = []
+    for letter in letters:
+        try:
+            games = await backend_client.list_games(title=letter, game_type="base", limit=1)  # just check if any exist
+            if games:
+                available_letters.append(letter)
+        except httpx.HTTPError:
+            pass  # skip letter on error
+
+    if not available_letters:
+        await callback.answer("Нет доступных игр в этой группе.", show_alert=True)
+        return
+
+    await state.update_data(current_game_group=group)
+    await state.set_state(CreateMeetupStates.waiting_for_game_group)
+    await _edit_creation_prompt(
+        callback,
+        state,
+        "Выбери первую букву:",
+        reply_markup=get_letters_keyboard(available_letters),
+    )
+
+
+@router.callback_query(F.data.startswith(f"{MEETUP_GAME_LETTER_CALLBACK_PREFIX}:"))
+async def select_game_letter(callback: CallbackQuery, state: FSMContext) -> None:
+    raw = callback.data or ""
+    parts = raw.split(":", 1)
+    if len(parts) != 2:
+        await callback.answer("Некорректный выбор.", show_alert=True)
+        return
+    letter = parts[1]
+
+    backend_client = BackendAPIClient()
+    page = 0
+    page_size = 8
+
+    try:
+        games = await backend_client.list_games(title=letter, game_type="base", limit=page_size, offset=page * page_size)
+    except httpx.HTTPError:
+        await callback.answer("Не удалось загрузить список игр.", show_alert=True)
+        return
+
+    # Filter by starting letter (case-insensitive)
+    filtered = [g for g in games if (g.get("title") or "").upper().startswith(letter.upper())]
+    has_more = len(games) == page_size
+
+    # Save available page games info to state so toggle can access metadata
+    await state.update_data(current_game_letter=letter, current_game_page=page, available_games={str(g.get("id")): {"id": g.get("id"), "title": g.get("title"), "min_players": g.get("min_players"), "max_players": g.get("max_players")} for g in filtered})
+    current_selected = await state.get_data()
+    selected_ids = set(current_selected.get("selected_game_ids") or [])
+
+    await _edit_creation_prompt(
+        callback,
+        state,
+        f"Игры на букву {letter} (страница {page+1}):",
+        reply_markup=get_games_list_keyboard(filtered, selected_ids, page, has_more),
+    )
+
+
+@router.callback_query(F.data.startswith(f"{MEETUP_GAME_PAGE_CALLBACK_PREFIX}:"))
+async def change_games_page(callback: CallbackQuery, state: FSMContext) -> None:
+    raw = callback.data or ""
+    parts = raw.split(":", 1)
+    if len(parts) != 2 or not parts[1].isdigit():
+        await callback.answer("Некорректная навигация.", show_alert=True)
+        return
+    page = int(parts[1])
+    data = await state.get_data()
+    letter = data.get("current_game_letter")
+    if not letter:
+        await callback.answer("Сначала выбери букву.", show_alert=True)
+        return
+
+    backend_client = BackendAPIClient()
+    page_size = 8
+    try:
+        games = await backend_client.list_games(title=letter, game_type="base", limit=page_size, offset=page * page_size)
+    except httpx.HTTPError:
+        await callback.answer("Не удалось загрузить список игр.", show_alert=True)
+        return
+
+    filtered = [g for g in games if (g.get("title") or "").upper().startswith(letter.upper())]
+    has_more = len(games) == page_size
+
+    await state.update_data(current_game_page=page, available_games={str(g.get("id")): {"id": g.get("id"), "title": g.get("title"), "min_players": g.get("min_players"), "max_players": g.get("max_players")} for g in filtered})
+    current_selected = await state.get_data()
+    selected_ids = set(current_selected.get("selected_game_ids") or [])
+
+    await _edit_creation_prompt(
+        callback,
+        state,
+        f"Игры на букву {letter} (страница {page+1}):",
+        reply_markup=get_games_list_keyboard(filtered, selected_ids, page, has_more),
+    )
+
+
+@router.callback_query(F.data.startswith(f"{MEETUP_GAME_TOGGLE_CALLBACK_PREFIX}:"))
+async def toggle_game_selection(callback: CallbackQuery, state: FSMContext) -> None:
+    raw = callback.data or ""
+    parts = raw.split(":", 1)
+    if len(parts) != 2:
+        await callback.answer("Некорректный выбор.", show_alert=True)
+        return
+    try:
+        gid = int(parts[1])
+    except ValueError:
+        await callback.answer("Некорректный идентификатор игры.", show_alert=True)
+        return
+
+    data = await state.get_data()
+    selected_ids = set(data.get("selected_game_ids") or [])
+    available = data.get("available_games") or {}
+
+    if str(gid) not in available:
+        # Try to fetch minimal info from backend, but if not present, ignore
+        try:
+            backend_client = BackendAPIClient()
+            fetched = await backend_client.list_games(limit=1, offset=0)  # fallback
+        except Exception:
+            fetched = []
+        # not ideal, but prefer no crash
+
+    if gid in selected_ids:
+        selected_ids.remove(gid)
+    else:
+        selected_ids.add(gid)
+        # store selected game minimal info
+        sel_games = data.get("selected_games") or []
+        if str(gid) in available:
+            info = available[str(gid)]
+            # avoid duplicates
+            if not any(s.get("id") == gid for s in sel_games):
+                sel_games.append(info)
+        await state.update_data(selected_games=sel_games)
+
+    await state.update_data(selected_game_ids=list(selected_ids))
+
+    # refresh current page keyboard
+    current_page = data.get("current_game_page") or 0
+    current_letter = data.get("current_game_letter")
+    backend_client = BackendAPIClient()
+    page_size = 8
+    try:
+        games = await backend_client.list_games(title=current_letter, game_type="base", limit=page_size, offset=current_page * page_size)
+    except httpx.HTTPError:
+        games = []
+    filtered = [g for g in games if (g.get("title") or "").upper().startswith((current_letter or "").upper())]
+    has_more = len(games) == page_size
+
+    await _edit_creation_prompt(
+        callback,
+        state,
+        f"Игры на букву {current_letter} (страница {current_page+1}):",
+        reply_markup=get_games_list_keyboard(filtered, selected_ids, current_page, has_more),
+    )
+
+
+@router.callback_query(F.data == MEETUP_GAME_DONE_CALLBACK)
+async def finish_game_selection(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    sel_games = data.get("selected_games") or []
+
+    # compute maximum playable for all selected games (min of max_players)
+    max_for_all = None
+    if sel_games:
+        max_vals = [g.get("max_players") for g in sel_games if g.get("max_players") is not None]
+        if max_vals:
+            max_for_all = min(max_vals)
+
+    await state.update_data(selected_games=sel_games)
+    await state.set_state(CreateMeetupStates.waiting_for_capacity)
+    # show capacity prompt with hint
+    await _edit_creation_prompt(
+        callback,
+        state,
+        _get_capacity_prompt_text_with_hint(max_for_all),
+        reply_markup=get_create_meetup_step_keyboard(can_go_back=True),
+    )
+
+
+@router.callback_query(F.data == MEETUP_GAME_SKIP_CALLBACK)
+async def skip_game_selection(callback: CallbackQuery, state: FSMContext) -> None:
+    # User chose to skip selecting games — proceed to capacity step with no games
+    await state.update_data(selected_games=[])
+    await state.set_state(CreateMeetupStates.waiting_for_capacity)
+    await _edit_creation_prompt(
+        callback,
+        state,
+        _get_capacity_prompt_text_with_hint(None),
+        reply_markup=get_create_meetup_step_keyboard(can_go_back=True),
+    )
 
 
 def _format_create_meetup_confirmation(
@@ -960,9 +1270,13 @@ async def _edit_creation_prompt(
 
     msg = cast(Message, message)
     await msg.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
-    await _record_creation_message(state, msg.message_id)
-    await state.update_data(creation_prompt_message_id=msg.message_id)
-    await callback.answer()
+    message_id = getattr(msg, "message_id", None)
+    if message_id is not None:
+        await _record_creation_message(state, message_id)
+    await state.update_data(creation_prompt_message_id=message_id)
+    answer = getattr(callback, "answer", None)
+    if callable(answer):
+        await callback.answer()
 
 
 def _is_group_creation(*, data: dict, message: Message) -> bool:

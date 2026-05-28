@@ -17,6 +17,12 @@ MEETUP_CREATE_BACK_CALLBACK = "meetup_create:back"
 MEETUP_CREATE_CANCEL_CALLBACK = "meetup_create:cancel"
 MEETUP_CREATE_SKIP_COMMENT_CALLBACK = "meetup_create:skip_comment"
 MEETUP_CHAT_SELECTION_CALLBACK_PREFIX = "meetup_chat_select"
+MEETUP_GAME_GROUP_CALLBACK_PREFIX = "meetup_game_group"
+MEETUP_GAME_LETTER_CALLBACK_PREFIX = "meetup_game_letter"
+MEETUP_GAME_PAGE_CALLBACK_PREFIX = "meetup_game_page"
+MEETUP_GAME_TOGGLE_CALLBACK_PREFIX = "meetup_game_toggle"
+MEETUP_GAME_DONE_CALLBACK = "meetup_game_done"
+MEETUP_GAME_SKIP_CALLBACK = "meetup_game_skip"
 
 
 def get_meetups_menu_keyboard() -> ReplyKeyboardMarkup:
@@ -154,6 +160,58 @@ def get_meetup_chat_selection_keyboard(chat_topics: list[dict]) -> InlineKeyboar
                 )
             ]
         )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_game_group_keyboard() -> InlineKeyboardMarkup:
+    # coarse-grained groups to reduce initial choices
+    groups = [
+        ("A-G", "A-G"),
+        ("H-N", "H-N"),
+        ("O-U", "O-U"),
+        ("V-Z", "V-Z"),
+        ("RU", "RU"),
+    ]
+    rows = [[InlineKeyboardButton(text=label, callback_data=f"{MEETUP_GAME_GROUP_CALLBACK_PREFIX}:{value}") ] for label, value in groups]
+    # Add a skip button to allow creating meetup without choosing games
+    rows.append([InlineKeyboardButton(text="Пропустить выбор игр", callback_data=MEETUP_GAME_SKIP_CALLBACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_letters_keyboard(letters: list[str]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for i, ch in enumerate(letters):
+        row.append(InlineKeyboardButton(text=ch, callback_data=f"{MEETUP_GAME_LETTER_CALLBACK_PREFIX}:{ch}"))
+        if (i + 1) % 6 == 0:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    # Add navigation buttons
+    rows.append([InlineKeyboardButton(text="Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_games_list_keyboard(games: list[dict], selected_ids: set[int], page: int, has_more: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for game in games:
+        gid = game.get("id")
+        title = game.get("title") or str(gid)
+        prefix = "✅ " if gid in selected_ids else ""
+        rows.append([InlineKeyboardButton(text=f"{prefix}{title}", callback_data=f"{MEETUP_GAME_TOGGLE_CALLBACK_PREFIX}:{gid}")])
+
+    nav_row: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(text="<- Назад", callback_data=f"{MEETUP_GAME_PAGE_CALLBACK_PREFIX}:{page-1}"))
+    if has_more:
+        nav_row.append(InlineKeyboardButton(text="Вперед ->", callback_data=f"{MEETUP_GAME_PAGE_CALLBACK_PREFIX}:{page+1}"))
+    if nav_row:
+        rows.append(nav_row)
+
+    rows.append([InlineKeyboardButton(text="Готово", callback_data=MEETUP_GAME_DONE_CALLBACK)])
+    rows.append([InlineKeyboardButton(text="Пропустить выбор игр", callback_data=MEETUP_GAME_SKIP_CALLBACK)])
+    rows.append([InlineKeyboardButton(text="Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

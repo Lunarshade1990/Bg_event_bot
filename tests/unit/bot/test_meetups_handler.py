@@ -9,6 +9,7 @@ from bot.app.handlers.meetups import (
     _get_creation_message_ids,
     _parse_chat_id,
     _start_private_chat_meetup_creation,
+    skip_game_selection,
 )
 
 
@@ -153,6 +154,10 @@ class DummyMessage:
         self.last_answer = SimpleNamespace(text=text, reply_markup=reply_markup, message_id=1)
         return self.last_answer
 
+    async def edit_text(self, text: str, parse_mode: str | None = None, reply_markup=None):
+        self.last_edited = SimpleNamespace(text=text, reply_markup=reply_markup)
+        return self.last_edited
+
 
 class FakeBackendAPIClient:
     async def sync_telegram_user(self, **kwargs):
@@ -206,3 +211,18 @@ async def test_start_private_chat_meetup_creation_multiple_chats_shows_selection
     assert message.last_answer is not None
     assert "Выбери чат" in message.last_answer.text
     assert len(message.last_answer.reply_markup.inline_keyboard) == 2
+
+
+@pytest.mark.asyncio
+async def test_skip_game_selection_moves_to_capacity() -> None:
+    state = DummyState()
+    message = DummyMessage()
+    # Simulate a callback query-like object
+    callback = SimpleNamespace(data="meetup_game_skip", message=message, from_user=SimpleNamespace(id=123))
+
+    await skip_game_selection(callback, state)
+
+    assert state.state is not None
+    assert "waiting_for_capacity" in str(state.state)
+    assert hasattr(message, "last_edited")
+    assert "Сколько всего игроков" in message.last_edited.text

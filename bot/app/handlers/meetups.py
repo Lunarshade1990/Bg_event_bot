@@ -386,13 +386,66 @@ async def back_create_meetup(callback: CallbackQuery, state: FSMContext) -> None
     data = await state.get_data()
 
     if current_state == CreateMeetupStates.waiting_for_game_selection.state:
-        # Go back to group selection from game list
-        await state.set_state(CreateMeetupStates.waiting_for_game_group)
-        await _show_dynamic_letter_groups(callback, state)
+        # Go back to letter selection from game list
+        data = await state.get_data()
+        current_letter = data.get("current_game_letter")
+        letters_map = data.get("letters_map") or {}
+        letter_groups = data.get("letter_groups")
+
+        # If we have grouped letter chunks, restore letters for the group
+        if letter_groups:
+            group_idx = data.get("current_game_group")
+            if group_idx is None and current_letter:
+                # find which group contains the current_letter
+                for i, grp in enumerate(letter_groups):
+                    if current_letter in grp:
+                        group_idx = i
+                        await state.update_data(current_game_group=group_idx)
+                        break
+            if group_idx is not None:
+                letters = letter_groups[group_idx]
+                await state.set_state(CreateMeetupStates.waiting_for_game_letter)
+                await _edit_creation_prompt(
+                    callback,
+                    state,
+                    "Выбери первую букву:",
+                    reply_markup=get_letters_keyboard(letters),
+                )
+                return
+
+        # Otherwise, show the flat letters list
+        all_letters = sorted(letters_map.keys())
+        await state.set_state(CreateMeetupStates.waiting_for_game_letter)
+        await _edit_creation_prompt(
+            callback,
+            state,
+            "Выбери первую букву:",
+            reply_markup=get_letters_keyboard(all_letters),
+        )
         return
 
     if current_state == CreateMeetupStates.waiting_for_game_group.state:
         # Go back to date selection
+        await state.update_data(selected_games=None, selected_game_ids=None)
+        await state.set_state(CreateMeetupStates.waiting_for_date)
+        await _edit_creation_prompt(
+            callback,
+            state,
+            "Когда планируется встреча?",
+            reply_markup=get_create_meetup_step_keyboard(can_go_back=True),
+        )
+        return
+
+    if current_state == CreateMeetupStates.waiting_for_game_letter.state:
+        # Go back one step: if we were showing grouped chunks, go to groups; otherwise back to date
+        data = await state.get_data()
+        letter_groups = data.get("letter_groups")
+        if letter_groups:
+            # show groups
+            await state.set_state(CreateMeetupStates.waiting_for_game_group)
+            await _show_dynamic_letter_groups(callback, state)
+            return
+        # No groups -> go back to date
         await state.update_data(selected_games=None, selected_game_ids=None)
         await state.set_state(CreateMeetupStates.waiting_for_date)
         await _edit_creation_prompt(
@@ -946,6 +999,7 @@ async def select_game_group(callback: CallbackQuery, state: FSMContext) -> None:
     letters = letter_groups[idx]
     # store current selection context
     await state.update_data(current_game_group=idx, current_game_letter=None)
+    await state.set_state(CreateMeetupStates.waiting_for_game_letter)
     await _edit_creation_prompt(
         callback,
         state,
@@ -978,6 +1032,7 @@ async def select_game_letter(callback: CallbackQuery, state: FSMContext) -> None
 
     # Save available page games info to state so toggle can access metadata
     await state.update_data(current_game_letter=letter, current_game_page=page, available_games={str(g.get("id")): {"id": g.get("id"), "title": g.get("title"), "min_players": g.get("min_players"), "max_players": g.get("max_players")} for g in page_games})
+    await state.set_state(CreateMeetupStates.waiting_for_game_selection)
     current_selected = await state.get_data()
     selected_ids = set(current_selected.get("selected_game_ids") or [])
 
@@ -1288,6 +1343,7 @@ async def _show_dynamic_letter_groups(callback: CallbackQuery, state: FSMContext
     await state.update_data(letters_map=letters_map)
     if len(all_letters) <= 5:
         await state.update_data(letter_groups=None)
+        await state.set_state(CreateMeetupStates.waiting_for_game_letter)
         await _edit_creation_prompt(
             callback,
             state,
@@ -1299,7 +1355,7 @@ async def _show_dynamic_letter_groups(callback: CallbackQuery, state: FSMContext
     # chunk letters into groups of 6
     groups: list[list[str]] = [all_letters[i : i + 6] for i in range(0, len(all_letters), 6)]
     await state.update_data(letter_groups=groups)
-
+    await state.set_state(CreateMeetupStates.waiting_for_game_group)
     # build keyboard with group buttons
     rows: list[list[InlineKeyboardButton]] = []
     for idx, grp in enumerate(groups):

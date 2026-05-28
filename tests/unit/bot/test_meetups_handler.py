@@ -10,6 +10,7 @@ from bot.app.handlers.meetups import (
     _parse_chat_id,
     _start_private_chat_meetup_creation,
     skip_game_selection,
+    receive_meetup_date,
 )
 
 
@@ -226,3 +227,27 @@ async def test_skip_game_selection_moves_to_capacity() -> None:
     assert "waiting_for_capacity" in str(state.state)
     assert hasattr(message, "last_edited")
     assert "Сколько всего игроков" in message.last_edited.text
+
+
+@pytest.mark.asyncio
+async def test_receive_meetup_date_builds_letters(monkeypatch) -> None:
+    class GamesBackend(FakeBackendAPIClient):
+        async def list_games(self, owner_id: int, game_type: str, limit: int, offset: int):
+            return [
+                {"id": 1, "title": "Arcs", "min_players": 1, "max_players": 4},
+                {"id": 2, "title": "Iss Vanguard", "min_players": 1, "max_players": 4},
+            ]
+
+    monkeypatch.setattr("bot.app.handlers.meetups.BackendAPIClient", GamesBackend)
+
+    state = DummyState()
+    message = DummyMessage()
+    message.text = "15.06 19:30"
+    message.message_id = 1
+
+    await receive_meetup_date(message, state)
+
+    data = await state.get_data()
+    assert "letters_map" in data
+    assert set(data["letters_map"].keys()) == {"A", "I"}
+    assert hasattr(message, "last_edited") or hasattr(message, "last_answer")

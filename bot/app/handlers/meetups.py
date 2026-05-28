@@ -2,6 +2,7 @@ import logging
 from html import escape
 from typing import cast
 from types import SimpleNamespace
+from aiogram.types import CallbackQuery, ChatMemberUpdated, Message, InlineKeyboardButton, InlineKeyboardMarkup
 
 import httpx
 from aiogram import Bot, F, Router
@@ -245,7 +246,19 @@ async def receive_meetup_date(message: Message, state: FSMContext) -> None:
     await state.update_data(scheduled_at=parsed.isoformat(), selected_games=[], selected_game_ids=[])
     await state.set_state(CreateMeetupStates.waiting_for_game_group)
     await _record_creation_message(state, message.message_id)
-    await _show_dynamic_letter_groups(cast(CallbackQuery, SimpleNamespace(message=message, from_user=message.from_user)), state)
+    # Adapter to allow using Message where CallbackQuery is expected
+    class _MessageCallbackAdapter:
+        def __init__(self, msg: Message):
+            self.message = msg
+            self.from_user = getattr(msg, "from_user", None)
+
+        async def answer(self, *args, **kwargs):
+            # CallbackQuery.answer() may be called without args; Message.answer requires text.
+            if args or kwargs:
+                return await self.message.answer(*args, **kwargs)
+            return None
+
+    await _show_dynamic_letter_groups(_MessageCallbackAdapter(message), state)
 
 
 @router.message(CreateMeetupStates.waiting_for_capacity)

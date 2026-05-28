@@ -1,24 +1,29 @@
+import logging
 from html import escape
+from typing import cast
 
 import httpx
-import logging
 from aiogram import Bot, F, Router
-from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
-from typing import cast
 
 from backend.app.core.config import get_settings
 from bot.app.keyboards.main_menu import get_main_menu_keyboard
 from bot.app.keyboards.meetups import (
     MEETUP_CALLBACK_PREFIX,
+    MEETUP_CREATE_BACK_CALLBACK,
+    MEETUP_CREATE_CANCEL_CALLBACK,
+    MEETUP_CREATE_CONFIRM_CALLBACK,
     MEETUP_DELETE_CALLBACK_PREFIX,
     MEETUP_DELETE_CONFIRM_CALLBACK_PREFIX,
     MEETUP_JOIN_CALLBACK_PREFIX,
     MEETUP_LEAVE_CALLBACK_PREFIX,
+    get_create_meetup_confirm_keyboard,
+    get_create_meetup_step_keyboard,
+    get_group_meetup_keyboard,
     get_meetup_delete_confirm_keyboard,
     get_meetup_detail_keyboard,
-    get_group_meetup_keyboard,
     get_meetups_list_keyboard,
     get_meetups_menu_keyboard,
 )
@@ -77,12 +82,13 @@ async def start_group_meetup(message: Message, state: FSMContext) -> None:
         telegram_chat_id=target_chat_id,
         telegram_thread_id=target_thread_id,
     )
+    await _record_creation_message(state, message.message_id)
     await state.set_state(CreateMeetupStates.waiting_for_date)
-    await message.answer(
-        "Создание встречи.\n"
-        "Укажи дату и время в формате "
-        f"<code>{MEETUP_DATETIME_EXAMPLE}</code> (UTC).",
-        parse_mode="HTML",
+    await _send_creation_prompt(
+        message,
+        state,
+        _get_date_prompt_text(group_mode=True),
+        reply_markup=get_create_meetup_step_keyboard(can_go_back=False),
     )
 
 
@@ -134,56 +140,79 @@ async def start_create_meetup(message: Message, state: FSMContext) -> None:
     if not await _ensure_profile(message):
         return
 
+    await state.clear()
+    await _record_creation_message(state, message.message_id)
     await state.set_state(CreateMeetupStates.waiting_for_date)
-    await message.answer(
-        "Укажи дату и время встречи в формате "
-        f"<code>{MEETUP_DATETIME_EXAMPLE}</code> (UTC).",
-        parse_mode="HTML",
+    await _send_creation_prompt(
+        message,
+        state,
+        _get_date_prompt_text(group_mode=False),
+        reply_markup=get_create_meetup_step_keyboard(can_go_back=False),
     )
 
 
 @router.message(CreateMeetupStates.waiting_for_date)
 async def receive_meetup_date(message: Message, state: FSMContext) -> None:
+    await _record_creation_message(state, message.message_id)
+
     parsed = parse_meetup_datetime(message.text or "")
     if parsed is None:
-        await message.answer(
+        await _send_creation_prompt(
+            message,
+            state,
             "Не удалось разобрать дату. Пример: "
             f"<code>{MEETUP_DATETIME_EXAMPLE}</code>",
-            parse_mode="HTML",
+            reply_markup=get_create_meetup_step_keyboard(can_go_back=False),
         )
         return
 
     await state.update_data(scheduled_at=parsed.isoformat())
     await state.set_state(CreateMeetupStates.waiting_for_capacity)
-    await message.answer("Сколько всего игроков может участвовать? (число от 1)")
+    await _send_creation_prompt(
+        message,
+        state,
+        _get_capacity_prompt_text(),
+        reply_markup=get_create_meetup_step_keyboard(can_go_back=True),
+    )
 
 
 @router.message(CreateMeetupStates.waiting_for_capacity)
 async def receive_meetup_capacity(message: Message, state: FSMContext) -> None:
+    await _record_creation_message(state, message.message_id)
+
     raw_value = (message.text or "").strip()
     if not raw_value.isdigit():
-        await message.answer("Нужно целое число, например: 4")
+        await _send_creation_prompt(
+            message,
+            state,
+            "Нужно целое число, например: 4",
+            reply_markup=get_create_meetup_step_keyboard(can_go_back=True),
+        )
         return
 
     capacity_total = int(raw_value)
     if capacity_total < 1:
-        await message.answer("Вместимость должна быть не меньше 1.")
+        await _send_creation_prompt(
+            message,
+            state,
+            "Вместимость должна быть не меньше 1.",
+            reply_markup=get_create_meetup_step_keyboard(can_go_back=True),
+        )
         return
 
     await state.update_data(capacity_total=capacity_total)
     await state.set_state(CreateMeetupStates.waiting_for_comment)
-    await message.answer(
-        "Добавь комментарий к встрече или отправь <code>-</code>, чтобы пропустить.",
-        parse_mode="HTML",
+    await _send_creation_prompt(
+        message,
+        state,
+        _get_comment_prompt_text(),
+        reply_markup=get_create_meetup_step_keyboard(can_go_back=True),
     )
 
 
 @router.message(CreateMeetupStates.waiting_for_comment)
 async def receive_meetup_comment(message: Message, state: FSMContext) -> None:
-    user = message.from_user
-    if user is None:
-        await message.answer("Не удалось определить пользователя Telegram.")
-        return
+    await _record_creation_message(state, message.message_id)
 
     raw_comment = (message.text or "").strip()
     comment = None if raw_comment.lower() in SKIP_COMMENT_VALUES else raw_comment
@@ -199,41 +228,162 @@ async def receive_meetup_comment(message: Message, state: FSMContext) -> None:
         )
         return
 
+    await state.update_data(comment=comment)
+    await state.set_state(CreateMeetupStates.waiting_for_confirmation)
+    await _send_creation_prompt(
+        message,
+        state,
+        _format_create_meetup_confirmation(
+            scheduled_at=scheduled_at,
+            capacity_total=capacity_total,
+            comment=comment,
+        ),
+        reply_markup=get_create_meetup_confirm_keyboard(),
+    )
+
+
+@router.message(CreateMeetupStates.waiting_for_confirmation)
+async def receive_meetup_confirmation_text(message: Message, state: FSMContext) -> None:
+    await _record_creation_message(state, message.message_id)
+
+    data = await state.get_data()
+    scheduled_at = data.get("scheduled_at")
+    capacity_total = data.get("capacity_total")
+    if scheduled_at is None or capacity_total is None:
+        await state.clear()
+        await message.answer(
+            "Данные встречи потерялись. Начни создание заново.",
+            reply_markup=get_meetups_menu_keyboard(),
+        )
+        return
+
+    await _send_creation_prompt(
+        message,
+        state,
+        _format_create_meetup_confirmation(
+            scheduled_at=scheduled_at,
+            capacity_total=capacity_total,
+            comment=data.get("comment"),
+            prefix="Почти готово. Нажми кнопку, чтобы создать встречу.",
+        ),
+        reply_markup=get_create_meetup_confirm_keyboard(),
+    )
+
+
+@router.callback_query(F.data == MEETUP_CREATE_BACK_CALLBACK)
+async def back_create_meetup(callback: CallbackQuery, state: FSMContext) -> None:
+    current_state = await state.get_state()
+    data = await state.get_data()
+
+    if current_state == CreateMeetupStates.waiting_for_capacity.state:
+        await state.update_data(scheduled_at=None)
+        await state.set_state(CreateMeetupStates.waiting_for_date)
+        await _edit_creation_prompt(
+            callback,
+            state,
+            _get_date_prompt_text(group_mode=bool(data.get("group_mode"))),
+            reply_markup=get_create_meetup_step_keyboard(can_go_back=False),
+        )
+        return
+
+    if current_state == CreateMeetupStates.waiting_for_comment.state:
+        await state.update_data(capacity_total=None)
+        await state.set_state(CreateMeetupStates.waiting_for_capacity)
+        await _edit_creation_prompt(
+            callback,
+            state,
+            _get_capacity_prompt_text(),
+            reply_markup=get_create_meetup_step_keyboard(can_go_back=True),
+        )
+        return
+
+    if current_state == CreateMeetupStates.waiting_for_confirmation.state:
+        await state.update_data(comment=None)
+        await state.set_state(CreateMeetupStates.waiting_for_comment)
+        await _edit_creation_prompt(
+            callback,
+            state,
+            _get_comment_prompt_text(),
+            reply_markup=get_create_meetup_step_keyboard(can_go_back=True),
+        )
+        return
+
+    await callback.answer("Назад отсюда перейти нельзя.", show_alert=True)
+
+
+@router.callback_query(F.data == MEETUP_CREATE_CANCEL_CALLBACK)
+async def cancel_create_meetup(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    message = callback.message
+    await state.clear()
+
+    if message is None:
+        await callback.answer("Создание встречи отменено.")
+        return
+
+    msg = cast(Message, message)
+    if _is_group_creation(data=data, message=msg):
+        await callback.answer("Создание встречи отменено.")
+        await _delete_creation_messages(
+            msg.bot,
+            _get_creation_chat_id(data, msg),
+            _get_creation_message_ids(data, msg.message_id),
+        )
+        return
+
+    await msg.edit_text("Создание встречи отменено.")
+    await callback.answer("Создание встречи отменено.")
+
+
+@router.callback_query(F.data == MEETUP_CREATE_CONFIRM_CALLBACK)
+async def confirm_create_meetup(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    scheduled_at = data.get("scheduled_at")
+    capacity_total = data.get("capacity_total")
+    if scheduled_at is None or capacity_total is None:
+        await state.clear()
+        await callback.answer("Данные встречи потерялись. Начни создание заново.", show_alert=True)
+        return
+
     backend_client = BackendAPIClient()
-    profile = await _ensure_profile_for_user(message, backend_client=backend_client)
+    profile = await _ensure_profile_for_user_callback(callback, backend_client=backend_client)
     if profile is None:
         return
 
+    telegram_chat_id = data.get("telegram_chat_id")
+    telegram_thread_id = data.get("telegram_thread_id")
     try:
-        telegram_chat_id = data.get("telegram_chat_id")
-        telegram_thread_id = data.get("telegram_thread_id")
         meetup = await backend_client.create_meetup(
             creator_user_id=profile["id"],
             scheduled_at=scheduled_at,
             capacity_total=capacity_total,
-            comment=comment,
+            comment=data.get("comment"),
             telegram_chat_id=telegram_chat_id,
             telegram_thread_id=telegram_thread_id,
         )
     except httpx.HTTPStatusError as exc:
-        await message.answer(f"Не удалось создать встречу: {_extract_error_detail(exc)}")
+        await callback.answer(
+            f"Не удалось создать встречу: {_extract_error_detail(exc)}",
+            show_alert=True,
+        )
         return
     except httpx.HTTPError:
-        await message.answer("Не удалось связаться с backend API.")
+        await callback.answer("Не удалось связаться с backend API.", show_alert=True)
         return
 
+    message = callback.message
     await state.clear()
     if telegram_chat_id and telegram_thread_id:
-        bot = message.bot
-        if bot is None:
-            await message.answer("Не удалось отправить сообщение в тему.")
+        if message is None:
+            await callback.answer("Не удалось отправить сообщение в тему.", show_alert=True)
             return
-        sent = await bot.send_message(
+        msg = cast(Message, message)
+        sent = await msg.bot.send_message(
             chat_id=telegram_chat_id,
             message_thread_id=telegram_thread_id,
             text=_format_group_meetup_card(meetup),
             parse_mode="HTML",
-            reply_markup=_build_group_keyboard_for_user(meetup, telegram_id=user.id),
+            reply_markup=_build_group_keyboard_for_user(meetup, telegram_id=callback.from_user.id),
         )
         try:
             await backend_client.set_meetup_telegram_message_id(
@@ -243,10 +393,21 @@ async def receive_meetup_comment(message: Message, state: FSMContext) -> None:
         except httpx.HTTPError:
             pass
 
-        await message.answer("Встреча создана и опубликована в теме.", reply_markup=get_main_menu_keyboard())
+        await callback.answer("Встреча создана и опубликована в теме.")
+        await _delete_creation_messages(
+            msg.bot,
+            telegram_chat_id,
+            _get_creation_message_ids(data, msg.message_id),
+        )
         return
 
-    await message.answer(_format_meetup_details(meetup), parse_mode="HTML", reply_markup=get_meetups_menu_keyboard())
+    if message is not None:
+        msg = cast(Message, message)
+        await msg.edit_text(
+            _format_meetup_details(meetup),
+            parse_mode="HTML",
+        )
+    await callback.answer("Встреча создана.")
 
 
 @router.message(F.text == "Список встреч")
@@ -288,7 +449,6 @@ async def join_meetup(callback: CallbackQuery) -> None:
         await callback.answer("Некорректная встреча.", show_alert=True)
         return
 
-    user = callback.from_user
     backend_client = BackendAPIClient()
 
     profile = await _ensure_profile_for_user_callback(callback, backend_client=backend_client)
@@ -315,7 +475,6 @@ async def leave_meetup(callback: CallbackQuery) -> None:
         await callback.answer("Некорректная встреча.", show_alert=True)
         return
 
-    user = callback.from_user
     backend_client = BackendAPIClient()
     profile = await _ensure_profile_for_user_callback(callback, backend_client=backend_client)
     if profile is None:
@@ -471,7 +630,10 @@ async def _render_meetup_details(callback: CallbackQuery, meetup_id: int) -> Non
         )
     else:
         joined_user_ids = {participant["telegram_id"] for participant in meetup["participants"]}
-        can_join = user.id not in joined_user_ids and len(meetup["participants"]) < meetup["capacity_total"]
+        can_join = (
+            user.id not in joined_user_ids
+            and len(meetup["participants"]) < meetup["capacity_total"]
+        )
         await msg.edit_text(
             _format_meetup_details(meetup),
             parse_mode="HTML",
@@ -525,7 +687,46 @@ def _format_group_meetup_card(meetup: dict) -> str:
     )
 
 
-async def _ensure_profile_for_user(message: Message, *, backend_client: BackendAPIClient) -> dict | None:
+def _get_date_prompt_text(*, group_mode: bool) -> str:
+    prefix = "Создание встречи.\n" if group_mode else ""
+    return (
+        f"{prefix}Укажи дату и время встречи в формате "
+        f"<code>{MEETUP_DATETIME_EXAMPLE}</code> (UTC)."
+    )
+
+
+def _get_capacity_prompt_text() -> str:
+    return "Сколько всего игроков может участвовать? (число от 1)"
+
+
+def _get_comment_prompt_text() -> str:
+    return "Добавь комментарий к встрече или отправь <code>-</code>, чтобы пропустить."
+
+
+def _format_create_meetup_confirmation(
+    *,
+    scheduled_at: str,
+    capacity_total: int,
+    comment: str | None,
+    prefix: str = "Проверь встречу перед публикацией.",
+) -> str:
+    date_label = escape(format_meetup_datetime(scheduled_at))
+    comment_line = escape(comment) if comment else "без комментария"
+    return "\n".join(
+        [
+            prefix,
+            f"Дата: <code>{date_label}</code>",
+            f"Игроков: {capacity_total}",
+            f"Комментарий: {comment_line}",
+        ]
+    )
+
+
+async def _ensure_profile_for_user(
+    message: Message,
+    *,
+    backend_client: BackendAPIClient,
+) -> dict | None:
     user = message.from_user
     if user is None:
         await message.answer("Не удалось определить пользователя Telegram.")
@@ -567,6 +768,83 @@ async def _ensure_profile_for_user_callback(
         return None
 
 
+async def _record_creation_message(state: FSMContext, message_id: int) -> None:
+    data = await state.get_data()
+    message_ids = data.get("creation_message_ids")
+    if not isinstance(message_ids, list):
+        message_ids = []
+    if message_id not in message_ids:
+        message_ids.append(message_id)
+    await state.update_data(creation_message_ids=message_ids)
+
+
+async def _send_creation_prompt(
+    message: Message,
+    state: FSMContext,
+    text: str,
+    *,
+    reply_markup,
+) -> None:
+    data = await state.get_data()
+    previous_prompt_id = data.get("creation_prompt_message_id")
+    prompt = await message.answer(text, parse_mode="HTML", reply_markup=reply_markup)
+    await _record_creation_message(state, prompt.message_id)
+    await state.update_data(creation_prompt_message_id=prompt.message_id)
+    if isinstance(previous_prompt_id, int) and previous_prompt_id != prompt.message_id:
+        await _delete_creation_messages(message.bot, message.chat.id, [previous_prompt_id])
+
+
+async def _edit_creation_prompt(
+    callback: CallbackQuery,
+    state: FSMContext,
+    text: str,
+    *,
+    reply_markup,
+) -> None:
+    message = callback.message
+    if message is None:
+        await callback.answer("Не удалось обновить шаг создания встречи.", show_alert=True)
+        return
+
+    msg = cast(Message, message)
+    await msg.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
+    await _record_creation_message(state, msg.message_id)
+    await state.update_data(creation_prompt_message_id=msg.message_id)
+    await callback.answer()
+
+
+def _is_group_creation(*, data: dict, message: Message) -> bool:
+    has_group_target = bool(data.get("telegram_chat_id") and data.get("telegram_thread_id"))
+    return has_group_target or message.chat.type in {"group", "supergroup"}
+
+
+def _get_creation_chat_id(data: dict, message: Message) -> int:
+    telegram_chat_id = data.get("telegram_chat_id")
+    if isinstance(telegram_chat_id, int):
+        return telegram_chat_id
+    return message.chat.id
+
+
+def _get_creation_message_ids(data: dict, *extra_message_ids: int) -> list[int]:
+    raw_message_ids = data.get("creation_message_ids")
+    message_ids = raw_message_ids if isinstance(raw_message_ids, list) else []
+    result: list[int] = []
+    for message_id in [*message_ids, *extra_message_ids]:
+        if isinstance(message_id, int) and message_id not in result:
+            result.append(message_id)
+    return result
+
+
+async def _delete_creation_messages(bot: Bot | None, chat_id: int, message_ids: list[int]) -> None:
+    if bot is None:
+        return
+    for message_id in message_ids:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
+
+
 async def _ensure_forum_topic_thread_id(
     *,
     bot: Bot | None,
@@ -592,9 +870,27 @@ async def _ensure_forum_topic_thread_id(
             _topic_thread_cache[chat_id] = thread_id
             return thread_id
 
+    logger = logging.getLogger(__name__)
+    # log chat info to help diagnose forum/topic creation issues
+    try:
+        chat_info = await bot.get_chat(chat_id)
+        try:
+            logger.info(
+                "Chat info for %s: type=%s, title=%s, is_forum=%s",
+                chat_id,
+                getattr(chat_info, "type", None),
+                getattr(chat_info, "title", None),
+                getattr(chat_info, "is_forum", None),
+            )
+        except Exception:
+            logger.info("Chat info for %s: %r", chat_id, chat_info)
+    except Exception:
+        logger.exception("Failed to get chat info for %s before creating forum topic", chat_id)
+
     try:
         topic = await bot.create_forum_topic(chat_id=chat_id, name=topic_name)
     except Exception:
+        logger.exception("create_forum_topic failed for chat %s", chat_id)
         return None
 
     thread_id = getattr(topic, "message_thread_id", None)

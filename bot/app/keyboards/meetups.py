@@ -1,4 +1,9 @@
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 
 from bot.app.utils.meetup_datetime import format_meetup_datetime
 
@@ -7,6 +12,9 @@ MEETUP_JOIN_CALLBACK_PREFIX = "meetup_join"
 MEETUP_LEAVE_CALLBACK_PREFIX = "meetup_leave"
 MEETUP_DELETE_CALLBACK_PREFIX = "meetup_delete"
 MEETUP_DELETE_CONFIRM_CALLBACK_PREFIX = "meetup_delete_confirm"
+MEETUP_CREATE_CONFIRM_CALLBACK = "meetup_create:confirm"
+MEETUP_CREATE_BACK_CALLBACK = "meetup_create:back"
+MEETUP_CREATE_CANCEL_CALLBACK = "meetup_create:cancel"
 
 
 def get_meetups_menu_keyboard() -> ReplyKeyboardMarkup:
@@ -61,31 +69,54 @@ def get_meetup_detail_keyboard(
         )
 
     rows.append(
-        [InlineKeyboardButton(text="К списку встреч", callback_data=f"{MEETUP_CALLBACK_PREFIX}:list")]
+        [
+            InlineKeyboardButton(
+                text="К списку встреч",
+                callback_data=f"{MEETUP_CALLBACK_PREFIX}:list",
+            )
+        ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_group_meetup_keyboard(*, meetup_id: int, is_joined: bool) -> InlineKeyboardMarkup:
-    if is_joined:
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="❌ Не пойду",
-                        callback_data=f"{MEETUP_LEAVE_CALLBACK_PREFIX}:{meetup_id}",
-                    )
-                ]
-            ]
-        )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="✅ Участвовать",
                     callback_data=f"{MEETUP_JOIN_CALLBACK_PREFIX}:{meetup_id}",
-                )
+                ),
+                InlineKeyboardButton(
+                    text="❌ Не пойду",
+                    callback_data=f"{MEETUP_LEAVE_CALLBACK_PREFIX}:{meetup_id}",
+                ),
             ]
+        ]
+    )
+
+
+def get_create_meetup_step_keyboard(*, can_go_back: bool) -> InlineKeyboardMarkup:
+    row: list[InlineKeyboardButton] = []
+    if can_go_back:
+        row.append(InlineKeyboardButton(text="Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK))
+    row.append(InlineKeyboardButton(text="Отмена", callback_data=MEETUP_CREATE_CANCEL_CALLBACK))
+    return InlineKeyboardMarkup(inline_keyboard=[row])
+
+
+def get_create_meetup_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Создать",
+                    callback_data=MEETUP_CREATE_CONFIRM_CALLBACK,
+                )
+            ],
+            [
+                InlineKeyboardButton(text="Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK),
+                InlineKeyboardButton(text="Отмена", callback_data=MEETUP_CREATE_CANCEL_CALLBACK),
+            ],
         ]
     )
 

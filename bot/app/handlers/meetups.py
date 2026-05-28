@@ -15,10 +15,12 @@ from bot.app.keyboards.meetups import (
     MEETUP_CREATE_BACK_CALLBACK,
     MEETUP_CREATE_CANCEL_CALLBACK,
     MEETUP_CREATE_CONFIRM_CALLBACK,
+    MEETUP_CREATE_SKIP_COMMENT_CALLBACK,
     MEETUP_DELETE_CALLBACK_PREFIX,
     MEETUP_DELETE_CONFIRM_CALLBACK_PREFIX,
     MEETUP_JOIN_CALLBACK_PREFIX,
     MEETUP_LEAVE_CALLBACK_PREFIX,
+    get_create_meetup_comment_keyboard,
     get_create_meetup_confirm_keyboard,
     get_create_meetup_step_keyboard,
     get_group_meetup_keyboard,
@@ -32,6 +34,7 @@ from bot.app.states.create_meetup import CreateMeetupStates
 from bot.app.utils.meetup_datetime import (
     MEETUP_DATETIME_EXAMPLE,
     format_meetup_datetime,
+    is_future_meetup_datetime,
     parse_meetup_datetime,
 )
 
@@ -166,6 +169,15 @@ async def receive_meetup_date(message: Message, state: FSMContext) -> None:
         )
         return
 
+    if not is_future_meetup_datetime(parsed):
+        await _send_creation_prompt(
+            message,
+            state,
+            "Дата и время встречи должны быть в будущем. Попробуй еще раз.",
+            reply_markup=get_create_meetup_step_keyboard(can_go_back=False),
+        )
+        return
+
     await state.update_data(scheduled_at=parsed.isoformat())
     await state.set_state(CreateMeetupStates.waiting_for_capacity)
     await _send_creation_prompt(
@@ -206,7 +218,7 @@ async def receive_meetup_capacity(message: Message, state: FSMContext) -> None:
         message,
         state,
         _get_comment_prompt_text(),
-        reply_markup=get_create_meetup_step_keyboard(can_go_back=True),
+        reply_markup=get_create_meetup_comment_keyboard(),
     )
 
 
@@ -237,6 +249,30 @@ async def receive_meetup_comment(message: Message, state: FSMContext) -> None:
             scheduled_at=scheduled_at,
             capacity_total=capacity_total,
             comment=comment,
+        ),
+        reply_markup=get_create_meetup_confirm_keyboard(),
+    )
+
+
+@router.callback_query(F.data == MEETUP_CREATE_SKIP_COMMENT_CALLBACK)
+async def skip_create_meetup_comment(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    scheduled_at = data.get("scheduled_at")
+    capacity_total = data.get("capacity_total")
+    if scheduled_at is None or capacity_total is None:
+        await state.clear()
+        await callback.answer("Данные встречи потерялись. Начни создание заново.", show_alert=True)
+        return
+
+    await state.update_data(comment=None)
+    await state.set_state(CreateMeetupStates.waiting_for_confirmation)
+    await _edit_creation_prompt(
+        callback,
+        state,
+        _format_create_meetup_confirmation(
+            scheduled_at=scheduled_at,
+            capacity_total=capacity_total,
+            comment=None,
         ),
         reply_markup=get_create_meetup_confirm_keyboard(),
     )
@@ -304,7 +340,7 @@ async def back_create_meetup(callback: CallbackQuery, state: FSMContext) -> None
             callback,
             state,
             _get_comment_prompt_text(),
-            reply_markup=get_create_meetup_step_keyboard(can_go_back=True),
+            reply_markup=get_create_meetup_comment_keyboard(),
         )
         return
 
@@ -671,27 +707,24 @@ def _format_group_meetup_card(meetup: dict) -> str:
     if not participant_lines:
         participant_lines = ["- пока нет участников"]
 
+    lines = [
+        f"<b>Встреча</b> (#{meetup['id']})",
+        f"Дата: <code>{date_label}</code>",
+        f"Свободно мест: <b>{free}</b> из {capacity}",
+    ]
     comment = meetup.get("comment")
-    comment_line = escape(comment) if comment else "без комментария"
-
-    return "\n".join(
-        [
-            f"<b>Встреча</b> (#{meetup['id']})",
-            f"Дата: <code>{date_label}</code>",
-            f"Свободно мест: <b>{free}</b> из {capacity}",
-            f"Комментарий: {comment_line}",
-            "",
-            "<b>Участники:</b>",
-            *participant_lines,
-        ]
-    )
+    if comment:
+        lines.append(f"Комментарий: {escape(comment)}")
+    lines.extend(["", "<b>Участники:</b>", *participant_lines])
+    return "\n".join(lines)
 
 
 def _get_date_prompt_text(*, group_mode: bool) -> str:
     prefix = "Создание встречи.\n" if group_mode else ""
     return (
-        f"{prefix}Укажи дату и время встречи в формате "
-        f"<code>{MEETUP_DATETIME_EXAMPLE}</code> (UTC)."
+        f"{prefix}Укажи дату и время встречи, например "
+        f"<code>{MEETUP_DATETIME_EXAMPLE}</code> (UTC). "
+        "Год можно не писать или указать полностью/двумя цифрами."
     )
 
 
@@ -700,7 +733,7 @@ def _get_capacity_prompt_text() -> str:
 
 
 def _get_comment_prompt_text() -> str:
-    return "Добавь комментарий к встрече или отправь <code>-</code>, чтобы пропустить."
+    return "Добавь комментарий к встрече или нажми «Пропустить»."
 
 
 def _format_create_meetup_confirmation(
@@ -711,15 +744,14 @@ def _format_create_meetup_confirmation(
     prefix: str = "Проверь встречу перед публикацией.",
 ) -> str:
     date_label = escape(format_meetup_datetime(scheduled_at))
-    comment_line = escape(comment) if comment else "без комментария"
-    return "\n".join(
-        [
-            prefix,
-            f"Дата: <code>{date_label}</code>",
-            f"Игроков: {capacity_total}",
-            f"Комментарий: {comment_line}",
-        ]
-    )
+    lines = [
+        prefix,
+        f"Дата: <code>{date_label}</code>",
+        f"Игроков: {capacity_total}",
+    ]
+    if comment:
+        lines.append(f"Комментарий: {escape(comment)}")
+    return "\n".join(lines)
 
 
 async def _ensure_profile_for_user(
@@ -903,6 +935,7 @@ async def _ensure_forum_topic_thread_id(
         logger.exception("Failed to save forum topic %s for chat %s", thread_id, chat_id)
     return thread_id
 
+
 def _format_meetup_details(meetup: dict) -> str:
     date_label = escape(format_meetup_datetime(meetup["scheduled_at"]))
     participants = meetup.get("participants", [])
@@ -912,20 +945,16 @@ def _format_meetup_details(meetup: dict) -> str:
     if not participant_lines:
         participant_lines = ["- пока никто не подтвердил участие"]
 
+    lines = [
+        f"<b>Встреча #{meetup['id']}</b>",
+        f"Дата: <code>{date_label}</code>",
+        f"Игроков: {len(participants)}/{meetup['capacity_total']}",
+    ]
     comment = meetup.get("comment")
-    comment_line = escape(comment) if comment else "без комментария"
-
-    return "\n".join(
-        [
-            f"<b>Встреча #{meetup['id']}</b>",
-            f"Дата: <code>{date_label}</code>",
-            f"Игроков: {len(participants)}/{meetup['capacity_total']}",
-            f"Комментарий: {comment_line}",
-            "",
-            "Участники:",
-            *participant_lines,
-        ]
-    )
+    if comment:
+        lines.append(f"Комментарий: {escape(comment)}")
+    lines.extend(["", "Участники:", *participant_lines])
+    return "\n".join(lines)
 
 
 def _format_participant_line(participant: dict) -> str:

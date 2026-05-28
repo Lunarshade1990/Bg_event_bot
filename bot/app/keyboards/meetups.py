@@ -15,6 +15,7 @@ MEETUP_DELETE_CONFIRM_CALLBACK_PREFIX = "meetup_delete_confirm"
 MEETUP_CREATE_CONFIRM_CALLBACK = "meetup_create:confirm"
 MEETUP_CREATE_BACK_CALLBACK = "meetup_create:back"
 MEETUP_CREATE_CANCEL_CALLBACK = "meetup_create:cancel"
+MEETUP_CREATE_SKIP_COMMENT_CALLBACK = "meetup_create:skip_comment"
 
 
 def get_meetups_menu_keyboard() -> ReplyKeyboardMarkup:
@@ -102,6 +103,23 @@ def get_create_meetup_step_keyboard(*, can_go_back: bool) -> InlineKeyboardMarku
         row.append(InlineKeyboardButton(text="Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK))
     row.append(InlineKeyboardButton(text="Отмена", callback_data=MEETUP_CREATE_CANCEL_CALLBACK))
     return InlineKeyboardMarkup(inline_keyboard=[row])
+
+
+def get_create_meetup_comment_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Пропустить",
+                    callback_data=MEETUP_CREATE_SKIP_COMMENT_CALLBACK,
+                )
+            ],
+            [
+                InlineKeyboardButton(text="Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK),
+                InlineKeyboardButton(text="Отмена", callback_data=MEETUP_CREATE_CANCEL_CALLBACK),
+            ],
+        ]
+    )
 
 
 def get_create_meetup_confirm_keyboard() -> InlineKeyboardMarkup:

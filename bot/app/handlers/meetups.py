@@ -1244,7 +1244,8 @@ async def _show_dynamic_letter_groups(callback: CallbackQuery, state: FSMContext
 
     # Fetch all base games for the user (paginated)
     all_games: list[dict] = []
-    limit = 200
+    # Backend enforces maximum limit 100, use that to paginate
+    limit = 100
     offset = 0
     while True:
         try:

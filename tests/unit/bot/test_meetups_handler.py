@@ -32,7 +32,7 @@ def test_format_meetup_details_escapes_user_content() -> None:
         }
     )
 
-    assert "<b>Встреча #1</b>" in text
+    assert text.startswith("<b>в понедельник в 19:30</b>"), text
     assert "Играем в _Catan_ и *Azul* <test>" not in text
     assert "Играем в _Catan_ и *Azul* &lt;test&gt;" in text
     assert "Anna & Co" not in text
@@ -60,6 +60,22 @@ def test_format_create_meetup_confirmation_omits_empty_comment() -> None:
 
     assert "Комментарий:" not in text
     assert "без комментария" not in text
+
+
+def test_format_create_meetup_confirmation_includes_selected_games() -> None:
+    text = _format_create_meetup_confirmation(
+        scheduled_at="2026-06-15T19:30:00+00:00",
+        capacity_total=4,
+        comment=None,
+        selected_games=[
+            {"id": 1, "title": "Catan"},
+            {"id": 2, "title": "Azul"},
+        ],
+    )
+
+    assert "Игры:" in text
+    assert "- Catan" in text
+    assert "- Azul" in text
 
 
 def test_get_creation_message_ids_deduplicates_extra_message_ids() -> None:
@@ -100,6 +116,49 @@ def test_format_group_meetup_card_omits_empty_comment() -> None:
 
     assert "Комментарий:" not in text
     assert "без комментария" not in text
+    assert text.startswith("<b>в понедельник в 19:30</b>"), text
+
+
+def test_format_group_meetup_card_includes_selected_games() -> None:
+    text = _format_group_meetup_card(
+        {
+            "id": 1,
+            "scheduled_at": "2026-06-15T19:30:00+00:00",
+            "capacity_total": 4,
+            "comment": None,
+            "participants": [],
+        },
+        selected_games=[
+            {"id": 1, "title": "Catan"},
+            {"id": 2, "title": "Azul"},
+        ],
+    )
+
+    assert "Игры:" in text
+    assert "- Catan" in text
+    assert "- Azul" in text
+    assert text.startswith("<b>Catan в понедельник в 19:30</b>"), text
+
+
+def test_format_meetup_details_includes_selected_games() -> None:
+    text = _format_meetup_details(
+        {
+            "id": 1,
+            "scheduled_at": "2026-06-15T19:30:00+00:00",
+            "capacity_total": 4,
+            "comment": None,
+            "participants": [],
+        },
+        selected_games=[
+            {"id": 1, "title": "Catan"},
+            {"id": 2, "title": "Azul"},
+        ],
+    )
+
+    assert "Игры:" in text
+    assert "- Catan" in text
+    assert "- Azul" in text
+    assert text.startswith("<b>Catan в понедельник в 19:30</b>"), text
 
 
 def test_parse_chat_id_accepts_positive_and_negative_values() -> None:

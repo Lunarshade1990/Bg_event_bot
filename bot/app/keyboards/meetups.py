@@ -178,7 +178,7 @@ def get_game_group_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_letters_keyboard(letters: list[str]) -> InlineKeyboardMarkup:
+def get_letters_keyboard(letters: list[str], *, selected_ids: set[int] | None = None) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
     for i, ch in enumerate(letters):
@@ -188,7 +188,10 @@ def get_letters_keyboard(letters: list[str]) -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
-    # Add navigation buttons
+
+    if selected_ids:
+        rows.append([InlineKeyboardButton(text="Готово", callback_data=MEETUP_GAME_DONE_CALLBACK)])
+    rows.append([InlineKeyboardButton(text="Пропустить выбор игр", callback_data=MEETUP_GAME_SKIP_CALLBACK)])
     rows.append([InlineKeyboardButton(text="Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

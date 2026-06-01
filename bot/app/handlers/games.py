@@ -11,6 +11,10 @@ from bot.app.keyboards.games import (
     get_my_games_keyboard,
 )
 from bot.app.services.backend_api import BackendAPIClient
+from bot.app.utils.game_player_counts import (
+    calculate_game_max_players_with_expansions,
+    calculate_max_for_all_selected_games,
+)
 
 router = Router(name="games")
 
@@ -209,12 +213,11 @@ def _match_owned_base_games(
     return matched_base_games
 
 
+
 def _build_grouped_entry(game: dict, expansions: list[dict]) -> dict:
-    display_max_players = game["max_players"]
-    if game.get("game_type") == "base":
-        for expansion in expansions:
-            extra_players = max(expansion["max_players"] - game["max_players"], 0)
-            display_max_players += extra_players
+    display_max_players = calculate_game_max_players_with_expansions(game, expansions)
+    if display_max_players is None:
+        display_max_players = game["max_players"]
 
     return {
         "game": game,

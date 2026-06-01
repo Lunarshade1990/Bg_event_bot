@@ -47,6 +47,17 @@ def is_future_meetup_datetime(value: datetime, *, now: datetime | None = None) -
     return value > reference
 
 
+WEEKDAY_NAMES = [
+    "в понедельник",
+    "во вторник",
+    "в среду",
+    "в четверг",
+    "в пятницу",
+    "в субботу",
+    "в воскресенье",
+]
+
+
 def format_meetup_datetime(value: str) -> str:
     if value.endswith("Z"):
         value = value[:-1] + "+00:00"
@@ -56,6 +67,19 @@ def format_meetup_datetime(value: str) -> str:
     else:
         parsed = parsed.astimezone(UTC)
     return parsed.strftime(MEETUP_DATETIME_FORMAT)
+
+
+def format_meetup_weekday_time(value: str) -> str:
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    else:
+        parsed = parsed.astimezone(UTC)
+    weekday = WEEKDAY_NAMES[parsed.weekday()]
+    time_label = parsed.strftime("%H:%M")
+    return f"{weekday} в {time_label}"
 
 
 def _get_current_year(now: datetime | None) -> int:

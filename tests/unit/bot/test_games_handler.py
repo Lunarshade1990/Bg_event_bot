@@ -4,6 +4,8 @@ from bot.app.handlers.games import (
     _format_my_games_text,
     _group_owned_games,
     _parse_offset,
+    calculate_game_max_players_with_expansions,
+    calculate_max_for_all_selected_games,
 )
 
 
@@ -71,6 +73,34 @@ def test_build_grouped_entry_sums_extra_players_from_multiple_expansions() -> No
 
     assert entry["display_min_players"] == 1
     assert entry["display_max_players"] == 6
+
+
+def test_calculate_game_max_players_with_expansions_counts_extra_players() -> None:
+    base_game = {"max_players": 4, "game_type": "base"}
+    expansions = [
+        {"max_players": 5},
+        {"max_players": 5},
+    ]
+
+    assert calculate_game_max_players_with_expansions(base_game, expansions) == 6
+
+
+def test_calculate_game_max_players_with_expansions_returns_base_max_when_no_expansions() -> None:
+    base_game = {"max_players": 4, "game_type": "base"}
+    assert calculate_game_max_players_with_expansions(base_game, []) == 4
+
+
+def test_calculate_max_for_all_selected_games_considers_owned_expansions() -> None:
+    selected_games = [
+        {"bgg_id": 100, "max_players": 4, "game_type": "base"},
+        {"bgg_id": 200, "max_players": 5, "game_type": "base"},
+    ]
+    owned_expansions = [
+        {"max_players": 5, "bgg_expands_ids_cached": [100]},
+        {"max_players": 6, "bgg_expands_ids_cached": [100]},
+    ]
+
+    assert calculate_max_for_all_selected_games(selected_games, owned_expansions) == 5
 
 
 def test_format_my_games_text_renders_expansions_line() -> None:

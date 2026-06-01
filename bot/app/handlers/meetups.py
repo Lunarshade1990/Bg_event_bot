@@ -1,15 +1,23 @@
 import logging
 from html import escape
+from io import BytesIO
 from typing import cast
 from types import SimpleNamespace
-from aiogram.types import CallbackQuery, ChatMemberUpdated, Message, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    ChatMemberUpdated,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from aiogram.exceptions import TelegramBadRequest, TelegramAPIError
 
 import httpx
 from aiogram import Bot, F, Router
+from PIL import Image
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, ChatMemberUpdated, Message, InlineKeyboardButton, InlineKeyboardMarkup
 
 from backend.app.core.config import get_settings
 from bot.app.keyboards.main_menu import get_main_menu_keyboard
@@ -45,9 +53,11 @@ from bot.app.keyboards.meetups import (
 )
 from bot.app.services.backend_api import BackendAPIClient
 from bot.app.states.create_meetup import CreateMeetupStates
+from bot.app.utils.game_player_counts import calculate_max_for_all_selected_games
 from bot.app.utils.meetup_datetime import (
     MEETUP_DATETIME_EXAMPLE,
     format_meetup_datetime,
+    format_meetup_weekday_time,
     is_future_meetup_datetime,
     parse_meetup_datetime,
 )
@@ -323,6 +333,7 @@ async def receive_meetup_comment(message: Message, state: FSMContext) -> None:
             scheduled_at=scheduled_at,
             capacity_total=capacity_total,
             comment=comment,
+            selected_games=data.get("selected_games"),
         ),
         reply_markup=get_create_meetup_confirm_keyboard(),
     )
@@ -347,6 +358,7 @@ async def skip_create_meetup_comment(callback: CallbackQuery, state: FSMContext)
             scheduled_at=scheduled_at,
             capacity_total=capacity_total,
             comment=None,
+            selected_games=data.get("selected_games"),
         ),
         reply_markup=get_create_meetup_confirm_keyboard(),
     )
@@ -374,6 +386,7 @@ async def receive_meetup_confirmation_text(message: Message, state: FSMContext) 
             scheduled_at=scheduled_at,
             capacity_total=capacity_total,
             comment=data.get("comment"),
+            selected_games=data.get("selected_games"),
             prefix="Почти готово. Нажми кнопку, чтобы создать встречу.",
         ),
         reply_markup=get_create_meetup_confirm_keyboard(),
@@ -405,22 +418,26 @@ async def back_create_meetup(callback: CallbackQuery, state: FSMContext) -> None
             if group_idx is not None:
                 letters = letter_groups[group_idx]
                 await state.set_state(CreateMeetupStates.waiting_for_game_letter)
+                current_selected = await state.get_data()
+                selected_ids = set(current_selected.get("selected_game_ids") or [])
                 await _edit_creation_prompt(
                     callback,
                     state,
                     "Выбери первую букву:",
-                    reply_markup=get_letters_keyboard(letters),
+                    reply_markup=get_letters_keyboard(letters, selected_ids=selected_ids),
                 )
                 return
 
         # Otherwise, show the flat letters list
         all_letters = sorted(letters_map.keys())
         await state.set_state(CreateMeetupStates.waiting_for_game_letter)
+        current_selected = await state.get_data()
+        selected_ids = set(current_selected.get("selected_game_ids") or [])
         await _edit_creation_prompt(
             callback,
             state,
             "Выбери первую букву:",
-            reply_markup=get_letters_keyboard(all_letters),
+            reply_markup=get_letters_keyboard(all_letters, selected_ids=selected_ids),
         )
         return
 
@@ -573,17 +590,30 @@ async def confirm_create_meetup(callback: CallbackQuery, state: FSMContext) -> N
     message = callback.message
     await state.clear()
     if telegram_chat_id and telegram_thread_id:
+        selected_games = data.get("selected_games") or []
         if message is None:
             await callback.answer("Не удалось отправить сообщение в тему.", show_alert=True)
             return
         msg = cast(Message, message)
-        sent = await msg.bot.send_message(
-            chat_id=telegram_chat_id,
-            message_thread_id=telegram_thread_id,
-            text=_format_group_meetup_card(meetup),
-            parse_mode="HTML",
-            reply_markup=_build_group_keyboard_for_user(meetup, telegram_id=callback.from_user.id),
-        )
+        caption = _format_group_meetup_card(meetup, selected_games=selected_games)
+        collage = await _build_meetup_collage_bytes(selected_games)
+        if collage is not None:
+            sent = await msg.bot.send_photo(
+                chat_id=telegram_chat_id,
+                message_thread_id=telegram_thread_id,
+                photo=BufferedInputFile(collage.getvalue(), filename="meetup_collage.jpg"),
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=_build_group_keyboard_for_user(meetup, telegram_id=callback.from_user.id),
+            )
+        else:
+            sent = await msg.bot.send_message(
+                chat_id=telegram_chat_id,
+                message_thread_id=telegram_thread_id,
+                text=caption,
+                parse_mode="HTML",
+                reply_markup=_build_group_keyboard_for_user(meetup, telegram_id=callback.from_user.id),
+            )
         try:
             await backend_client.set_meetup_telegram_message_id(
                 meetup["id"],
@@ -603,7 +633,7 @@ async def confirm_create_meetup(callback: CallbackQuery, state: FSMContext) -> N
     if message is not None:
         msg = cast(Message, message)
         await msg.edit_text(
-            _format_meetup_details(meetup),
+            _format_meetup_details(meetup, selected_games=data.get("selected_games")),
             parse_mode="HTML",
         )
     await callback.answer("Встреча создана.")
@@ -823,12 +853,29 @@ async def _render_meetup_details(callback: CallbackQuery, meetup_id: int) -> Non
         return
 
     is_group_context = message.chat.type in {"group", "supergroup"}
+    formatted_text = _format_group_meetup_card(meetup)
     if is_group_context:
-        await msg.edit_text(
-            _format_group_meetup_card(meetup),
-            parse_mode="HTML",
-            reply_markup=_build_group_keyboard_for_user(meetup, telegram_id=user.id),
-        )
+        if msg.photo:
+            try:
+                await msg.edit_caption(
+                    caption=formatted_text,
+                    parse_mode="HTML",
+                    reply_markup=_build_group_keyboard_for_user(meetup, telegram_id=user.id),
+                )
+            except TelegramBadRequest:
+                await msg.bot.edit_message_caption(
+                    chat_id=msg.chat.id,
+                    message_id=msg.message_id,
+                    caption=formatted_text,
+                    parse_mode="HTML",
+                    reply_markup=_build_group_keyboard_for_user(meetup, telegram_id=user.id),
+                )
+        else:
+            await msg.edit_text(
+                formatted_text,
+                parse_mode="HTML",
+                reply_markup=_build_group_keyboard_for_user(meetup, telegram_id=user.id),
+            )
     else:
         joined_user_ids = {participant["telegram_id"] for participant in meetup["participants"]}
         can_join = (
@@ -853,7 +900,7 @@ def _build_group_keyboard_for_user(meetup: dict, *, telegram_id: int):
     return get_group_meetup_keyboard(meetup_id=meetup["id"], is_joined=is_joined)
 
 
-def _format_group_meetup_card(meetup: dict) -> str:
+def _format_group_meetup_card(meetup: dict, selected_games: list[dict] | None = None) -> str:
     date_label = escape(format_meetup_datetime(meetup["scheduled_at"]))
     participants = meetup.get("participants", [])
     joined_count = len(participants)
@@ -872,14 +919,21 @@ def _format_group_meetup_card(meetup: dict) -> str:
     if not participant_lines:
         participant_lines = ["- пока нет участников"]
 
+    meeting_name = _format_meetup_heading(meetup, selected_games)
     lines = [
-        f"<b>Встреча</b> (#{meetup['id']})",
+        meeting_name,
         f"Дата: <code>{date_label}</code>",
         f"Свободно мест: <b>{free}</b> из {capacity}",
     ]
     comment = meetup.get("comment")
     if comment:
         lines.append(f"Комментарий: {escape(comment)}")
+    if selected_games:
+        lines.append("")
+        lines.append("Игры:")
+        for game in selected_games:
+            title = escape(str(game.get("title") or "Игры"))
+            lines.append(f"- {title}")
     lines.extend(["", "<b>Участники:</b>", *participant_lines])
     return "\n".join(lines)
 
@@ -1000,11 +1054,13 @@ async def select_game_group(callback: CallbackQuery, state: FSMContext) -> None:
     # store current selection context
     await state.update_data(current_game_group=idx, current_game_letter=None)
     await state.set_state(CreateMeetupStates.waiting_for_game_letter)
+    data = await state.get_data()
+    selected_ids = set(data.get("selected_game_ids") or [])
     await _edit_creation_prompt(
         callback,
         state,
         "Выбери первую букву:",
-        reply_markup=get_letters_keyboard(letters),
+        reply_markup=get_letters_keyboard(letters, selected_ids=selected_ids),
     )
 
 
@@ -1031,7 +1087,23 @@ async def select_game_letter(callback: CallbackQuery, state: FSMContext) -> None
     has_more = end < len(games_for_letter)
 
     # Save available page games info to state so toggle can access metadata
-    await state.update_data(current_game_letter=letter, current_game_page=page, available_games={str(g.get("id")): {"id": g.get("id"), "title": g.get("title"), "min_players": g.get("min_players"), "max_players": g.get("max_players")} for g in page_games})
+    await state.update_data(
+        current_game_letter=letter,
+        current_game_page=page,
+        available_games={
+            str(g.get("id")): {
+                "id": g.get("id"),
+                "title": g.get("title"),
+                "bgg_id": g.get("bgg_id"),
+                "game_type": g.get("game_type"),
+                "bgg_expands_ids_cached": g.get("bgg_expands_ids_cached"),
+                "min_players": g.get("min_players"),
+                "max_players": g.get("max_players"),
+                "image_url": g.get("image_url"),
+            }
+            for g in page_games
+        },
+    )
     await state.set_state(CreateMeetupStates.waiting_for_game_selection)
     current_selected = await state.get_data()
     selected_ids = set(current_selected.get("selected_game_ids") or [])
@@ -1069,7 +1141,22 @@ async def change_games_page(callback: CallbackQuery, state: FSMContext) -> None:
     filtered = [g for g in games if (g.get("title") or "").upper().startswith(letter.upper())]
     has_more = len(games) == page_size
 
-    await state.update_data(current_game_page=page, available_games={str(g.get("id")): {"id": g.get("id"), "title": g.get("title"), "min_players": g.get("min_players"), "max_players": g.get("max_players")} for g in filtered})
+    await state.update_data(
+        current_game_page=page,
+        available_games={
+            str(g.get("id")): {
+                "id": g.get("id"),
+                "title": g.get("title"),
+                "bgg_id": g.get("bgg_id"),
+                "game_type": g.get("game_type"),
+                "bgg_expands_ids_cached": g.get("bgg_expands_ids_cached"),
+                "min_players": g.get("min_players"),
+                "max_players": g.get("max_players"),
+                "image_url": g.get("image_url"),
+            }
+            for g in filtered
+        },
+    )
     current_selected = await state.get_data()
     selected_ids = set(current_selected.get("selected_game_ids") or [])
 
@@ -1147,12 +1234,22 @@ async def finish_game_selection(callback: CallbackQuery, state: FSMContext) -> N
     data = await state.get_data()
     sel_games = data.get("selected_games") or []
 
-    # compute maximum playable for all selected games (min of max_players)
+    # compute maximum playable for all selected games, taking owned expansions into account
     max_for_all = None
     if sel_games:
-        max_vals = [g.get("max_players") for g in sel_games if g.get("max_players") is not None]
-        if max_vals:
-            max_for_all = min(max_vals)
+        backend_client = BackendAPIClient()
+        profile = await _ensure_profile_for_user_callback(callback, backend_client=backend_client)
+        if profile is None:
+            return
+        try:
+            owned_expansions = await backend_client.list_games(
+                owner_id=profile["id"],
+                game_type="expansion",
+                limit=100,
+            )
+        except httpx.HTTPError:
+            owned_expansions = []
+        max_for_all = calculate_max_for_all_selected_games(sel_games, owned_expansions)
 
     await state.update_data(selected_games=sel_games)
     await state.set_state(CreateMeetupStates.waiting_for_capacity)
@@ -1168,7 +1265,7 @@ async def finish_game_selection(callback: CallbackQuery, state: FSMContext) -> N
 @router.callback_query(F.data == MEETUP_GAME_SKIP_CALLBACK)
 async def skip_game_selection(callback: CallbackQuery, state: FSMContext) -> None:
     # User chose to skip selecting games — proceed to capacity step with no games
-    await state.update_data(selected_games=[])
+    await state.update_data(selected_games=[], selected_game_ids=[])
     await state.set_state(CreateMeetupStates.waiting_for_capacity)
     await _edit_creation_prompt(
         callback,
@@ -1183,6 +1280,7 @@ def _format_create_meetup_confirmation(
     scheduled_at: str,
     capacity_total: int,
     comment: str | None,
+    selected_games: list[dict] | None = None,
     prefix: str = "Проверь встречу перед публикацией.",
 ) -> str:
     date_label = escape(format_meetup_datetime(scheduled_at))
@@ -1193,6 +1291,12 @@ def _format_create_meetup_confirmation(
     ]
     if comment:
         lines.append(f"Комментарий: {escape(comment)}")
+    if selected_games:
+        lines.append("")
+        lines.append("Игры:")
+        for game in selected_games:
+            title = escape(str(game.get("title") or "Игры"))
+            lines.append(f"- {title}")
     return "\n".join(lines)
 
 
@@ -1344,11 +1448,13 @@ async def _show_dynamic_letter_groups(callback: CallbackQuery, state: FSMContext
     if len(all_letters) <= 5:
         await state.update_data(letter_groups=None)
         await state.set_state(CreateMeetupStates.waiting_for_game_letter)
+        data = await state.get_data()
+        selected_ids = set(data.get("selected_game_ids") or [])
         await _edit_creation_prompt(
             callback,
             state,
             "Выбери первую букву:",
-            reply_markup=get_letters_keyboard(all_letters),
+            reply_markup=get_letters_keyboard(all_letters, selected_ids=selected_ids),
         )
         return
 
@@ -1395,6 +1501,51 @@ async def _delete_creation_messages(bot: Bot | None, chat_id: int, message_ids: 
             await bot.delete_message(chat_id=chat_id, message_id=message_id)
         except Exception:
             pass
+
+
+async def _build_meetup_collage_bytes(selected_games: list[dict]) -> BytesIO | None:
+    urls = [
+        str(game.get("image_url"))
+        for game in selected_games
+        if game.get("image_url")
+    ]
+    if not urls:
+        return None
+
+    images: list[Image.Image] = []
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for url in urls[:4]:
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+                image = Image.open(BytesIO(response.content)).convert("RGB")
+                images.append(image)
+            except Exception:
+                continue
+    if not images:
+        return None
+
+    thumb_size = (400, 400)
+    cols = 2
+    rows = (len(images) + cols - 1) // cols
+    canvas_width = thumb_size[0] * cols
+    canvas_height = thumb_size[1] * rows
+    canvas = Image.new("RGB", (canvas_width, canvas_height), "#111111")
+
+    for idx, image in enumerate(images):
+        image.thumbnail(thumb_size, Image.Resampling.LANCZOS)
+        thumb = Image.new("RGB", thumb_size, "#111111")
+        left = (thumb_size[0] - image.width) // 2
+        top = (thumb_size[1] - image.height) // 2
+        thumb.paste(image, (left, top))
+        x = (idx % cols) * thumb_size[0]
+        y = (idx // cols) * thumb_size[1]
+        canvas.paste(thumb, (x, y))
+
+    output = BytesIO()
+    canvas.save(output, format="JPEG", quality=85)
+    output.seek(0)
+    return output
 
 
 async def _ensure_forum_topic_thread_id(
@@ -1466,7 +1617,7 @@ async def _ensure_forum_topic_thread_id(
     return thread_id
 
 
-def _format_meetup_details(meetup: dict) -> str:
+def _format_meetup_details(meetup: dict, selected_games: list[dict] | None = None) -> str:
     date_label = escape(format_meetup_datetime(meetup["scheduled_at"]))
     participants = meetup.get("participants", [])
     participant_lines = [
@@ -1475,16 +1626,31 @@ def _format_meetup_details(meetup: dict) -> str:
     if not participant_lines:
         participant_lines = ["- пока никто не подтвердил участие"]
 
+    heading = _format_meetup_heading(meetup, selected_games)
     lines = [
-        f"<b>Встреча #{meetup['id']}</b>",
+        heading,
         f"Дата: <code>{date_label}</code>",
         f"Игроков: {len(participants)}/{meetup['capacity_total']}",
     ]
     comment = meetup.get("comment")
     if comment:
         lines.append(f"Комментарий: {escape(comment)}")
+    if selected_games:
+        lines.append("")
+        lines.append("Игры:")
+        for game in selected_games:
+            title = escape(str(game.get("title") or "Игры"))
+            lines.append(f"- {title}")
     lines.extend(["", "Участники:", *participant_lines])
     return "\n".join(lines)
+
+
+def _format_meetup_heading(meetup: dict, selected_games: list[dict] | None = None) -> str:
+    weekday_time = escape(format_meetup_weekday_time(meetup["scheduled_at"]))
+    if selected_games:
+        first_game_title = escape(str(selected_games[0].get("title") or "Встреча"))
+        return f"<b>{first_game_title} {weekday_time}</b>"
+    return f"<b>{weekday_time}</b>"
 
 
 def _format_participant_line(participant: dict) -> str:

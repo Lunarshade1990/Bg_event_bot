@@ -1,9 +1,13 @@
 from bot.app.handlers.games import (
-    _build_grouped_entry,
     _format_grouped_game_line,
     _format_my_games_text,
-    _group_owned_games,
     _parse_offset,
+)
+from bot.app.services.game_service import (
+    _build_grouped_entry,
+    _group_owned_games,
+)
+from bot.app.utils.game_player_counts import (
     calculate_game_max_players_with_expansions,
     calculate_max_for_all_selected_games,
 )

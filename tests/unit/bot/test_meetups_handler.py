@@ -9,8 +9,8 @@ from bot.app.handlers.meetups import (
     _get_creation_message_ids,
     _parse_chat_id,
     _start_private_chat_meetup_creation,
-    skip_game_selection,
     receive_meetup_date,
+    skip_game_selection,
 )
 
 
@@ -207,7 +207,12 @@ class DummyState:
 class DummyMessage:
     def __init__(self):
         self.chat = SimpleNamespace(type="private", id=-1)
-        self.from_user = SimpleNamespace(id=123, username="testuser", first_name="Test", last_name="User")
+        self.from_user = SimpleNamespace(
+            id=123,
+            username="testuser",
+            first_name="Test",
+            last_name="User",
+        )
         self.last_answer = None
 
     async def answer(self, text: str, parse_mode: str | None = None, reply_markup=None):
@@ -251,7 +256,9 @@ async def test_start_private_chat_meetup_creation_single_chat_sets_group_mode(mo
 
 
 @pytest.mark.asyncio
-async def test_start_private_chat_meetup_creation_multiple_chats_shows_selection(monkeypatch) -> None:
+async def test_start_private_chat_meetup_creation_multiple_chats_shows_selection(
+    monkeypatch,
+) -> None:
     class MultipleChatsBackend(FakeBackendAPIClient):
         async def list_telegram_chat_memberships(self, user_id: int):
             return [
@@ -278,7 +285,11 @@ async def test_skip_game_selection_moves_to_capacity() -> None:
     state = DummyState()
     message = DummyMessage()
     # Simulate a callback query-like object
-    callback = SimpleNamespace(data="meetup_game_skip", message=message, from_user=SimpleNamespace(id=123))
+    callback = SimpleNamespace(
+        data="meetup_game_skip",
+        message=message,
+        from_user=SimpleNamespace(id=123),
+    )
 
     await skip_game_selection(callback, state)
 
@@ -301,7 +312,7 @@ async def test_receive_meetup_date_builds_letters(monkeypatch) -> None:
 
     state = DummyState()
     message = DummyMessage()
-    message.text = "15.06 19:30"
+    message.text = "15.06.2099 19:30"
     message.message_id = 1
 
     await receive_meetup_date(message, state)

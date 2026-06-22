@@ -1,3 +1,6 @@
+from enum import Enum
+from typing import Any
+
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -28,7 +31,10 @@ MEETUP_GAME_SKIP_CALLBACK = "meetup_game_skip"
 def get_meetups_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="Создать встречу"), KeyboardButton(text="Список встреч")],
+            [
+                KeyboardButton(text="Создать встречу"),
+                KeyboardButton(text="Список встреч"),
+            ],
             [KeyboardButton(text="Назад")],
         ],
         resize_keyboard=True,
@@ -87,7 +93,9 @@ def get_meetup_detail_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_group_meetup_keyboard(*, meetup_id: int, is_joined: bool) -> InlineKeyboardMarkup:
+def get_group_meetup_keyboard(
+    *, meetup_id: int, is_joined: bool
+) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -107,8 +115,8 @@ def get_group_meetup_keyboard(*, meetup_id: int, is_joined: bool) -> InlineKeybo
 def get_create_meetup_step_keyboard(*, can_go_back: bool) -> InlineKeyboardMarkup:
     row: list[InlineKeyboardButton] = []
     if can_go_back:
-        row.append(InlineKeyboardButton(text="Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK))
-    row.append(InlineKeyboardButton(text="Отмена", callback_data=MEETUP_CREATE_CANCEL_CALLBACK))
+        row.append(_get_button(ButtonTypes.BACK))
+    row.append(_get_button(ButtonTypes.CANCEL))
     return InlineKeyboardMarkup(inline_keyboard=[row])
 
 
@@ -122,8 +130,8 @@ def get_create_meetup_comment_keyboard() -> InlineKeyboardMarkup:
                 )
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK),
-                InlineKeyboardButton(text="Отмена", callback_data=MEETUP_CREATE_CANCEL_CALLBACK),
+                _get_button(ButtonTypes.BACK),
+                _get_button(ButtonTypes.CANCEL),
             ],
         ]
     )
@@ -139,8 +147,12 @@ def get_create_meetup_confirm_keyboard() -> InlineKeyboardMarkup:
                 )
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK),
-                InlineKeyboardButton(text="Отмена", callback_data=MEETUP_CREATE_CANCEL_CALLBACK),
+                InlineKeyboardButton(
+                    text="Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK
+                ),
+                InlineKeyboardButton(
+                    text="Отмена", callback_data=MEETUP_CREATE_CANCEL_CALLBACK
+                ),
             ],
         ]
     )
@@ -163,26 +175,39 @@ def get_meetup_chat_selection_keyboard(chat_topics: list[dict]) -> InlineKeyboar
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_game_group_keyboard() -> InlineKeyboardMarkup:
-    # coarse-grained groups to reduce initial choices
-    groups = [
-        ("A-G", "A-G"),
-        ("H-N", "H-N"),
-        ("O-U", "O-U"),
-        ("V-Z", "V-Z"),
-        ("RU", "RU"),
-    ]
-    rows = [[InlineKeyboardButton(text=label, callback_data=f"{MEETUP_GAME_GROUP_CALLBACK_PREFIX}:{value}") ] for label, value in groups]
-    # Add a skip button to allow creating meetup without choosing games
-    rows.append([InlineKeyboardButton(text="Пропустить выбор игр", callback_data=MEETUP_GAME_SKIP_CALLBACK)])
+def get_game_group_keyboard(
+    groups: list[list[str]], selected_ids: set[Any]
+) -> InlineKeyboardMarkup:
+    # build keyboard with group buttons
+    rows: list[list[InlineKeyboardButton]] = []
+    for idx, grp in enumerate(groups):
+        label = f"{grp[0]}-{grp[-1]}" if len(grp) > 1 else grp[0]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=label,
+                    callback_data=f"{MEETUP_GAME_GROUP_CALLBACK_PREFIX}:{idx}",
+                )
+            ]
+        )
+    if selected_ids:
+        rows.append([_get_button(ButtonTypes.DONE)])
+    rows.append([_get_button(ButtonTypes.SKIP)])
+    rows.append([_get_button(ButtonTypes.BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_letters_keyboard(letters: list[str], *, selected_ids: set[int] | None = None) -> InlineKeyboardMarkup:
+def get_letters_keyboard(
+    letters: list[str], *, selected_ids: set[int] | None = None
+) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
     for i, ch in enumerate(letters):
-        row.append(InlineKeyboardButton(text=ch, callback_data=f"{MEETUP_GAME_LETTER_CALLBACK_PREFIX}:{ch}"))
+        row.append(
+            InlineKeyboardButton(
+                text=ch, callback_data=f"{MEETUP_GAME_LETTER_CALLBACK_PREFIX}:{ch}"
+            )
+        )
         if (i + 1) % 3 == 0:
             rows.append(row)
             row = []
@@ -190,31 +215,53 @@ def get_letters_keyboard(letters: list[str], *, selected_ids: set[int] | None = 
         rows.append(row)
 
     if selected_ids:
-        rows.append([InlineKeyboardButton(text="Готово", callback_data=MEETUP_GAME_DONE_CALLBACK)])
-    rows.append([InlineKeyboardButton(text="Пропустить выбор игр", callback_data=MEETUP_GAME_SKIP_CALLBACK)])
-    rows.append([InlineKeyboardButton(text="Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK)])
+        rows.append([_get_button(ButtonTypes.DONE)])
+
+    rows.append([_get_button(ButtonTypes.SKIP)])
+    rows.append([_get_button(ButtonTypes.BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_games_list_keyboard(games: list[dict], selected_ids: set[int], page: int, has_more: bool) -> InlineKeyboardMarkup:
+def get_games_list_keyboard(
+    games: list[dict], selected_ids: set[int], page: int, has_more: bool
+) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for game in games:
         gid = game.get("id")
         title = game.get("title") or str(gid)
         prefix = "✅ " if gid in selected_ids else ""
-        rows.append([InlineKeyboardButton(text=f"{prefix}{title}", callback_data=f"{MEETUP_GAME_TOGGLE_CALLBACK_PREFIX}:{gid}")])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{prefix}{title}",
+                    callback_data=f"{MEETUP_GAME_TOGGLE_CALLBACK_PREFIX}:{gid}",
+                )
+            ]
+        )
 
     nav_row: list[InlineKeyboardButton] = []
     if page > 0:
-        nav_row.append(InlineKeyboardButton(text="<- Назад", callback_data=f"{MEETUP_GAME_PAGE_CALLBACK_PREFIX}:{page-1}"))
+        nav_row.append(
+            InlineKeyboardButton(
+                text="<- Назад",
+                callback_data=f"{MEETUP_GAME_PAGE_CALLBACK_PREFIX}:{page-1}",
+            )
+        )
     if has_more:
-        nav_row.append(InlineKeyboardButton(text="Вперед ->", callback_data=f"{MEETUP_GAME_PAGE_CALLBACK_PREFIX}:{page+1}"))
+        nav_row.append(
+            InlineKeyboardButton(
+                text="Вперед ->",
+                callback_data=f"{MEETUP_GAME_PAGE_CALLBACK_PREFIX}:{page+1}",
+            )
+        )
     if nav_row:
         rows.append(nav_row)
 
-    rows.append([InlineKeyboardButton(text="Готово", callback_data=MEETUP_GAME_DONE_CALLBACK)])
-    rows.append([InlineKeyboardButton(text="Пропустить выбор игр", callback_data=MEETUP_GAME_SKIP_CALLBACK)])
-    rows.append([InlineKeyboardButton(text="Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK)])
+    if selected_ids:
+        rows.append([_get_button(ButtonTypes.DONE)])
+
+    rows.append([_get_button(ButtonTypes.SKIP)])
+    rows.append([_get_button(ButtonTypes.BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -240,3 +287,32 @@ def _format_meetup_button_label(meetup: dict) -> str:
     joined_count = len(meetup.get("participants", []))
     capacity = meetup["capacity_total"]
     return f"{date_label} ({joined_count}/{capacity})"
+
+
+class ButtonTypes(Enum):
+    DONE = "Done"
+    SKIP = "Skip"
+    BACK = "Back"
+    CANCEL = "Cancel"
+
+
+def _get_button(button_type: ButtonTypes) -> InlineKeyboardButton:
+    match button_type:
+        case ButtonTypes.DONE:
+            return InlineKeyboardButton(
+                text="✅ Готово",
+                callback_data=MEETUP_GAME_DONE_CALLBACK,
+            )
+        case ButtonTypes.SKIP:
+            return InlineKeyboardButton(
+                text="⏩ Пропустить выбор игр",
+                callback_data=MEETUP_GAME_SKIP_CALLBACK,
+            )
+        case ButtonTypes.BACK:
+            return InlineKeyboardButton(
+                text="↩️ Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK
+            )
+        case ButtonTypes.CANCEL:
+            return InlineKeyboardButton(
+                text="🚫 Отмена", callback_data=MEETUP_CREATE_CANCEL_CALLBACK
+            )

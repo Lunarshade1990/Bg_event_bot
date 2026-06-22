@@ -2,22 +2,19 @@ import logging
 from html import escape
 from io import BytesIO
 from typing import cast
-from types import SimpleNamespace
+
+import httpx
+from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
     ChatMemberUpdated,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
     Message,
 )
-from aiogram.exceptions import TelegramBadRequest, TelegramAPIError
-
-import httpx
-from aiogram import Bot, F, Router
 from PIL import Image
-from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
 
 from backend.app.core.config import get_settings
 from bot.app.keyboards.main_menu import get_main_menu_keyboard
@@ -30,21 +27,21 @@ from bot.app.keyboards.meetups import (
     MEETUP_CREATE_SKIP_COMMENT_CALLBACK,
     MEETUP_DELETE_CALLBACK_PREFIX,
     MEETUP_DELETE_CONFIRM_CALLBACK_PREFIX,
-    MEETUP_JOIN_CALLBACK_PREFIX,
-    MEETUP_LEAVE_CALLBACK_PREFIX,
+    MEETUP_GAME_DONE_CALLBACK,
     MEETUP_GAME_GROUP_CALLBACK_PREFIX,
     MEETUP_GAME_LETTER_CALLBACK_PREFIX,
     MEETUP_GAME_PAGE_CALLBACK_PREFIX,
-    MEETUP_GAME_TOGGLE_CALLBACK_PREFIX,
-    MEETUP_GAME_DONE_CALLBACK,
     MEETUP_GAME_SKIP_CALLBACK,
+    MEETUP_GAME_TOGGLE_CALLBACK_PREFIX,
+    MEETUP_JOIN_CALLBACK_PREFIX,
+    MEETUP_LEAVE_CALLBACK_PREFIX,
     get_create_meetup_comment_keyboard,
     get_create_meetup_confirm_keyboard,
     get_create_meetup_step_keyboard,
     get_game_group_keyboard,
-    get_letters_keyboard,
     get_games_list_keyboard,
     get_group_meetup_keyboard,
+    get_letters_keyboard,
     get_meetup_chat_selection_keyboard,
     get_meetup_delete_confirm_keyboard,
     get_meetup_detail_keyboard,
@@ -254,7 +251,11 @@ async def receive_meetup_date(message: Message, state: FSMContext) -> None:
         )
         return
 
-    await state.update_data(scheduled_at=parsed.isoformat(), selected_games=[], selected_game_ids=[])
+    await state.update_data(
+        scheduled_at=parsed.isoformat(),
+        selected_games=[],
+        selected_game_ids=[],
+    )
     await state.set_state(CreateMeetupStates.waiting_for_game_group)
     await _record_creation_message(state, message.message_id)
     # Adapter to allow using Message where CallbackQuery is expected
@@ -604,7 +605,10 @@ async def confirm_create_meetup(callback: CallbackQuery, state: FSMContext) -> N
                 photo=BufferedInputFile(collage.getvalue(), filename="meetup_collage.jpg"),
                 caption=caption,
                 parse_mode="HTML",
-                reply_markup=_build_group_keyboard_for_user(meetup, telegram_id=callback.from_user.id),
+                reply_markup=_build_group_keyboard_for_user(
+                    meetup,
+                    telegram_id=callback.from_user.id,
+                ),
             )
         else:
             sent = await msg.bot.send_message(
@@ -612,7 +616,10 @@ async def confirm_create_meetup(callback: CallbackQuery, state: FSMContext) -> N
                 message_thread_id=telegram_thread_id,
                 text=caption,
                 parse_mode="HTML",
-                reply_markup=_build_group_keyboard_for_user(meetup, telegram_id=callback.from_user.id),
+                reply_markup=_build_group_keyboard_for_user(
+                    meetup,
+                    telegram_id=callback.from_user.id,
+                ),
             )
         try:
             await backend_client.set_meetup_telegram_message_id(
@@ -955,7 +962,11 @@ def _get_capacity_prompt_text_with_hint(max_for_all: int | None) -> str:
     base = "Сколько всего игроков может участвовать? (число от 1)"
     if max_for_all is None:
         return base
-    return f"{base}\nПодсказка: для выбранных игр максимум, играющий во все игры одновременно: {max_for_all}"
+    return (
+        f"{base}\n"
+        "Подсказка: для выбранных игр максимум, играющий во все игры одновременно: "
+        f"{max_for_all}"
+    )
 
 
 def _get_comment_prompt_text() -> str:
@@ -1133,7 +1144,12 @@ async def change_games_page(callback: CallbackQuery, state: FSMContext) -> None:
     backend_client = BackendAPIClient()
     page_size = 8
     try:
-        games = await backend_client.list_games(title=letter, game_type="base", limit=page_size, offset=page * page_size)
+        games = await backend_client.list_games(
+            title=letter,
+            game_type="base",
+            limit=page_size,
+            offset=page * page_size,
+        )
     except httpx.HTTPError:
         await callback.answer("Не удалось загрузить список игр.", show_alert=True)
         return
@@ -1185,15 +1201,6 @@ async def toggle_game_selection(callback: CallbackQuery, state: FSMContext) -> N
     selected_ids = set(data.get("selected_game_ids") or [])
     available = data.get("available_games") or {}
 
-    if str(gid) not in available:
-        # Try to fetch minimal info from backend, but if not present, ignore
-        try:
-            backend_client = BackendAPIClient()
-            fetched = await backend_client.list_games(limit=1, offset=0)  # fallback
-        except Exception:
-            fetched = []
-        # not ideal, but prefer no crash
-
     if gid in selected_ids:
         selected_ids.remove(gid)
     else:
@@ -1215,10 +1222,19 @@ async def toggle_game_selection(callback: CallbackQuery, state: FSMContext) -> N
     backend_client = BackendAPIClient()
     page_size = 8
     try:
-        games = await backend_client.list_games(title=current_letter, game_type="base", limit=page_size, offset=current_page * page_size)
+        games = await backend_client.list_games(
+            title=current_letter,
+            game_type="base",
+            limit=page_size,
+            offset=current_page * page_size,
+        )
     except httpx.HTTPError:
         games = []
-    filtered = [g for g in games if (g.get("title") or "").upper().startswith((current_letter or "").upper())]
+    filtered = [
+        g
+        for g in games
+        if (g.get("title") or "").upper().startswith((current_letter or "").upper())
+    ]
     has_more = len(games) == page_size
 
     await _edit_creation_prompt(
@@ -1416,7 +1432,12 @@ async def _show_dynamic_letter_groups(callback: CallbackQuery, state: FSMContext
     offset = 0
     while True:
         try:
-            batch = await backend_client.list_games(owner_id=profile["id"], game_type="base", limit=limit, offset=offset)
+            batch = await backend_client.list_games(
+                owner_id=profile["id"],
+                game_type="base",
+                limit=limit,
+                offset=offset,
+            )
         except httpx.HTTPError:
             await callback.answer("Не удалось загрузить список игр.", show_alert=True)
             return
@@ -1445,10 +1466,11 @@ async def _show_dynamic_letter_groups(callback: CallbackQuery, state: FSMContext
 
     # If few letters, show them directly; otherwise chunk into groups of 6
     await state.update_data(letters_map=letters_map)
+    data = await state.get_data()
+    selected_ids = set(data.get("selected_game_ids") or [])
     if len(all_letters) <= 5:
         await state.update_data(letter_groups=None)
         await state.set_state(CreateMeetupStates.waiting_for_game_letter)
-        data = await state.get_data()
         selected_ids = set(data.get("selected_game_ids") or [])
         await _edit_creation_prompt(
             callback,
@@ -1461,14 +1483,13 @@ async def _show_dynamic_letter_groups(callback: CallbackQuery, state: FSMContext
     # chunk letters into groups of 6
     groups: list[list[str]] = [all_letters[i : i + 6] for i in range(0, len(all_letters), 6)]
     await state.update_data(letter_groups=groups)
-    await state.set_state(CreateMeetupStates.waiting_for_game_group)
-    # build keyboard with group buttons
-    rows: list[list[InlineKeyboardButton]] = []
-    for idx, grp in enumerate(groups):
-        label = f"{grp[0]}-{grp[-1]}" if len(grp) > 1 else grp[0]
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"{MEETUP_GAME_GROUP_CALLBACK_PREFIX}:{idx}")])
-    rows.append([InlineKeyboardButton(text="Назад", callback_data=MEETUP_CREATE_BACK_CALLBACK)])
-    await _edit_creation_prompt(callback, state, "Выбери диапазон букв:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+    await _edit_creation_prompt(
+        callback,
+        state,
+        "Выбери диапазон букв:",
+        reply_markup=get_game_group_keyboard(groups, selected_ids=selected_ids),
+    )
 
 
 def _is_group_creation(*, data: dict, message: Message) -> bool:

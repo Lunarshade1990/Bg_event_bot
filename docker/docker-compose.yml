@@ -10,5 +10,81 @@ services:
     ports:
       - "${DB_PORT:-5432}:5432"
     volumes:
-      - ./postgres/data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${DB_USER:-boardgames_user} -d ${DB_NAME:-boardgames_meetup_bot}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: boardgames-meetup-bot:local
+    container_name: boardgames_meetup_migrate
+    restart: "no"
+    env_file:
+      - ../.env
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["/usr/local/bin/wait-for-postgres", "alembic", "upgrade", "head"]
+
+  backend:
+    image: boardgames-meetup-bot:local
+    container_name: boardgames_meetup_backend
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_PORT: 8000
+      BACKEND_BASE_URL: http://backend:8000
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: ["sh", "-c", "/usr/local/bin/wait-for-postgres && alembic upgrade head && uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  bot:
+    image: boardgames-meetup-bot:local
+    container_name: boardgames_meetup_bot
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      BACKEND_BASE_URL: http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    command: ["sh", "-c", "/usr/local/bin/wait-for-postgres && python -m bot.app.main"]
+
+volumes:
+  postgres_data:

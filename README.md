@@ -55,9 +55,53 @@ python -m bot.app.main
 
 - каркас проекта
 - безопасная конфигурация через переменные окружения
-- Docker Compose для PostgreSQL
+- Docker Compose для PostgreSQL, backend, bot и миграций
 - базовые точки входа backend и bot
 - стартовая тестовая инфраструктура
+
+## Запуск всего стека в Docker
+
+Этот вариант ближе к будущему запуску на VPS: `postgres`, одноразовый контейнер миграций,
+`backend` и `bot` поднимаются одной командой.
+
+1. Подготовить `.env` в корне проекта. Реальные значения хранятся только локально:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Минимально нужны:
+
+- `DB_NAME`, `DB_USER`, `DB_PASSWORD`
+- `TELEGRAM_BOT_TOKEN`
+- `INTERNAL_API_TOKEN`
+- `TELEGRAM_TOPIC_NAME`
+
+Для Docker не нужно менять `DB_HOST` и `BACKEND_BASE_URL` в `.env`: compose сам передает
+контейнерам внутренние значения `DB_HOST=postgres` и `BACKEND_BASE_URL=http://backend:8000`.
+
+2. Собрать и запустить сервисы:
+
+```powershell
+docker compose --env-file .env -f docker/docker-compose.yml up -d --build
+```
+
+3. Проверить состояние:
+
+```powershell
+docker compose --env-file .env -f docker/docker-compose.yml ps
+docker compose --env-file .env -f docker/docker-compose.yml logs -f backend
+docker compose --env-file .env -f docker/docker-compose.yml logs -f bot
+```
+
+4. Остановить сервисы:
+
+```powershell
+docker compose --env-file .env -f docker/docker-compose.yml down
+```
+
+PostgreSQL хранит данные в именованном Docker volume `docker_postgres_data`. Старый локальный
+каталог `docker/postgres/data` больше не используется этим compose-файлом.
 
 ## Что будет следующим шагом
 

@@ -17,6 +17,7 @@ COPY bot ./bot
 COPY docker/wait-for-postgres.sh /usr/local/bin/wait-for-postgres
 
 RUN chmod +x /usr/local/bin/wait-for-postgres
+RUN chmod -R a+rX /app
 
 RUN python -m pip install --no-cache-dir .
 

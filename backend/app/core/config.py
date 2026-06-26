@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     db_port: int = Field(default=5432, alias="DB_PORT")
     db_name: str = Field(default="boardgames_meetup_bot", alias="DB_NAME")
     db_user: str = Field(default="boardgames_user", alias="DB_USER")
-    db_password: str = Field(default="change_me", alias="DB_PASSWORD")
+    db_password: str = Field(..., alias="DB_PASSWORD")
 
     telegram_bot_token: str = Field(default="replace_me", alias="TELEGRAM_BOT_TOKEN")
     bgg_access_token: str = Field(default="replace_me", alias="BGG_ACCESS_TOKEN")

@@ -145,9 +145,10 @@ def import_bgg_collection(
     if not resolved_bgg_username:
         raise BggImportError("BGG username is required for import.")
 
-    existing = user_repository.get_user_by_bgg_username(db, resolved_bgg_username)
-    if existing is not None and existing.id != user.id:
-        raise BggImportError("This BGG username is already linked to another user.")
+    #TODO Request user confirmation
+    # existing = user_repository.get_user_by_bgg_username(db, resolved_bgg_username)
+    # if existing is not None and existing.id != user.id:
+    #     raise BggImportError("This BGG username is already linked to another user.")
 
     if user.bgg_username != resolved_bgg_username:
         import_repository.update_user_bgg_username(

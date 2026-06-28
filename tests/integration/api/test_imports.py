@@ -183,6 +183,54 @@ def test_import_bgg_collection_creates_games_and_ownership(
     assert expansion.bgg_expands_ids_cached == [1001]
 
 
+def test_import_bgg_collection_stores_zero_play_time_as_null(
+    client: TestClient,
+    db_session,
+    api_headers: dict[str, str],
+    monkeypatch,
+) -> None:
+    user = User(
+        telegram_id=111222,
+        display_name="ZeroTimeUser",
+        bgg_username="zero_time_bgg",
+    )
+    db_session.add(user)
+    db_session.commit()
+
+    class FakeZeroTimeClient:
+        def collection(self, user_name: str, subtype: str, own: bool = True):
+            return [FakeCollectionItem(3001, "Zero Time Game")]
+
+        def game(self, game_id: int):
+            return FakeGameDetails(
+                name="Zero Time Game",
+                min_players=1,
+                max_players=4,
+                playing_time=0,
+                image="https://example.com/zero-time.jpg",
+                designers=["Designer"],
+                mechanics=[],
+                expands=[],
+            )
+
+    monkeypatch.setattr("backend.app.services.bgg_import.get_bgg_client", lambda: FakeZeroTimeClient())
+
+    response = client.post(
+        "/api/imports/bgg/collection",
+        headers=api_headers,
+        json={"telegram_id": 111222, "bgg_username": "zero_time_bgg"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["processed_games"] == 1
+    assert body["created_games"] == 1
+    assert body["linked_games"] == 1
+
+    imported_game = db_session.query(Game).filter(Game.bgg_id == 3001).one()
+    assert imported_game.play_time_minutes is None
+
+
 def test_import_bgg_collection_removes_missing_bgg_owned_games(
     client: TestClient,
     db_session,

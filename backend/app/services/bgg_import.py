@@ -49,6 +49,14 @@ def _extract_expands_bgg_ids(game_details) -> list[int]:
     return list(dict.fromkeys(expand_ids))
 
 
+def _extract_play_time(game_details) -> int | None:
+    for attr in ("playing_time", "max_playing_time", "min_playing_time"):
+        value = getattr(game_details, attr, None)
+        if value is not None and int(value) > 0:
+            return int(value)
+    return None
+
+
 def _upsert_game_from_bgg(
     db: Session,
     *,
@@ -66,11 +74,7 @@ def _upsert_game_from_bgg(
 
     min_players = getattr(game_details, "min_players", None) or 1
     max_players = getattr(game_details, "max_players", None) or min_players
-    play_time = (
-        getattr(game_details, "playing_time", None)
-        or getattr(game_details, "max_playing_time", None)
-        or getattr(game_details, "min_playing_time", None)
-    )
+    play_time = _extract_play_time(game_details)
     image_url = getattr(game_details, "image", None) or getattr(game_details, "thumbnail", None)
     designers = getattr(game_details, "designers", []) or []
     author = ", ".join(designers) if designers else None

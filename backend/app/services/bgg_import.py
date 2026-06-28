@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from time import sleep
 
 from boardgamegeek.api import BGGRestrictCollectionTo
 from boardgamegeek.exceptions import BGGApiError, BGGError
@@ -58,6 +59,20 @@ def _extract_play_time(game_details) -> int | None:
         if value is not None and int(value) > 0:
             return int(value)
     return None
+
+
+def _fetch_game_details_with_retries(client, game_id: int, retries: int = 3, delay_seconds: float = 1.0):
+    for attempt in range(1, retries + 1):
+        try:
+            return client.game(game_id=game_id)
+        except (BGGApiError, BGGError) as exc:
+            if attempt == retries:
+                raise
+            logger.warning(
+                f"Retry {attempt}/{retries} failed for BGG game id {game_id}: {exc}. "
+                f"Waiting {delay_seconds} seconds before retrying."
+            )
+            sleep(delay_seconds)
 
 
 def _upsert_game_from_bgg(
@@ -199,15 +214,24 @@ def import_bgg_collection(
             bgg_username=resolved_bgg_username,
         ):
             try:
-                details = client.game(game_id=item.id)
+                details = _fetch_game_details_with_retries(client, game_id=item.id)
+            except (BGGApiError, BGGError) as exc:
+                logger.warning(
+                    f"Skipping game with BGG ID {item.id}: failed to fetch details from BGG after retries: {exc}"
+                )
+                counters.processed_games += 1
+                continue
+
+            try:
                 game, created, updated = _upsert_game_from_bgg(
                     db,
                     subtype=subtype,
                     collection_item=item,
                     game_details=details,
+
                 )
             except Exception as exc:
-                logger.exception(f"Failed to import game with BGG ID {item.id}: {exc}")
+                logger.exception(f"Failed to process game with BGG ID {item.id}: {exc}")
                 raise
             
             counters.processed_games += 1

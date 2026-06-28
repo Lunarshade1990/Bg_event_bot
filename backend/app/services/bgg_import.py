@@ -1,8 +1,11 @@
+import logging
 from dataclasses import dataclass
 
 from boardgamegeek.api import BGGRestrictCollectionTo
 from boardgamegeek.exceptions import BGGApiError, BGGError
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from backend.app.clients.bgg import get_bgg_client, iter_owned_collection_items
 from backend.app.db.models.enums import CampaignSource, GameType, ImportJobStatus, OwnershipSource
@@ -72,8 +75,15 @@ def _upsert_game_from_bgg(
     if not title:
         raise BggImportError(f"BGG game {collection_item.id} does not have a title.")
 
-    min_players = getattr(game_details, "min_players", None) or 1
-    max_players = getattr(game_details, "max_players", None) or min_players
+    min_players = int(getattr(game_details, "min_players", None) or 1)
+    max_players = int(getattr(game_details, "max_players", None) or min_players)
+    
+    # Validate player counts
+    if min_players < 1:
+        min_players = 1
+    if max_players < min_players:
+        max_players = min_players
+    
     play_time = _extract_play_time(game_details)
     image_url = getattr(game_details, "image", None) or getattr(game_details, "thumbnail", None)
     designers = getattr(game_details, "designers", []) or []
@@ -84,23 +94,32 @@ def _upsert_game_from_bgg(
     normalized_type = _normalize_game_type(subtype)
 
     if game is None:
-        game = Game(
-            bgg_id=collection_item.id,
-            title=title,
-            original_title=title,
-            author=author,
-            min_players=min_players,
-            max_players=max_players,
-            play_time_minutes=play_time,
-            image_url=image_url,
-            game_type=normalized_type,
-            has_campaign=has_campaign,
-            campaign_source=campaign_source,
-            bgg_expands_ids_cached=expands_bgg_ids,
-            bgg_raw_mechanics_cached=mechanics,
-        )
-        db.add(game)
-        db.flush()
+        try:
+            game = Game(
+                bgg_id=collection_item.id,
+                title=title,
+                original_title=title,
+                author=author,
+                min_players=min_players,
+                max_players=max_players,
+                play_time_minutes=play_time,
+                image_url=image_url,
+                game_type=normalized_type,
+                has_campaign=has_campaign,
+                campaign_source=campaign_source,
+                bgg_expands_ids_cached=expands_bgg_ids,
+                bgg_raw_mechanics_cached=mechanics,
+            )
+            db.add(game)
+            db.flush()
+        except Exception as exc:
+            logger.error(
+                f"Failed to create game {collection_item.id}: {exc}. Game data: "
+                f"title={title}, min_players={min_players}, max_players={max_players}, "
+                f"play_time_minutes={play_time}, author={author}, game_type={normalized_type}"
+            )
+            raise
+        
         return game, True, False
 
     changes = {
@@ -179,13 +198,18 @@ def import_bgg_collection(
             client,
             bgg_username=resolved_bgg_username,
         ):
-            details = client.game(game_id=item.id)
-            game, created, updated = _upsert_game_from_bgg(
-                db,
-                subtype=subtype,
-                collection_item=item,
-                game_details=details,
-            )
+            try:
+                details = client.game(game_id=item.id)
+                game, created, updated = _upsert_game_from_bgg(
+                    db,
+                    subtype=subtype,
+                    collection_item=item,
+                    game_details=details,
+                )
+            except Exception as exc:
+                logger.exception(f"Failed to import game with BGG ID {item.id}: {exc}")
+                raise
+            
             counters.processed_games += 1
             counters.created_games += int(created)
             counters.updated_games += int(updated)

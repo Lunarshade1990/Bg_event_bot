@@ -87,7 +87,7 @@ class BackendAPIClient:
         async with httpx.AsyncClient(
             base_url=self._base_url,
             headers=self._headers,
-            timeout=120.0,
+            timeout=httpx.Timeout(None),
         ) as client:
             response = await client.post("/api/imports/bgg/collection", json=payload)
             response.raise_for_status()

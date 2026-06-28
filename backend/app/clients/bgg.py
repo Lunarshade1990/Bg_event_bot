@@ -32,19 +32,7 @@ def fetch_owned_collection(
 
 
 def _should_include_collection_item(item) -> bool:
-    if bool(getattr(item, "owned", False)):
-        return True
-
-    status_flags = [
-        bool(getattr(item, "preordered", False)),
-        bool(getattr(item, "prev_owned", False)),
-        bool(getattr(item, "want", False)),
-        bool(getattr(item, "want_to_buy", False)),
-        bool(getattr(item, "want_to_play", False)),
-        bool(getattr(item, "for_trade", False)),
-        bool(getattr(item, "wishlist", False)),
-    ]
-    return not any(status_flags)
+    return bool(getattr(item, "owned", False))
 
 
 def iter_owned_collection_items(client: BGGClient, *, bgg_username: str):

@@ -40,3 +40,18 @@ def get_user(db: Session, user_id: int) -> User | None:
 
 def get_user_by_telegram_id(db: Session, telegram_id: int) -> User | None:
     return user_repository.get_user_by_telegram_id(db, telegram_id)
+
+
+def list_users_with_games(
+    db: Session,
+    *,
+    exclude_user_id: int | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> list[User]:
+    return user_repository.list_users_with_games(
+        db,
+        exclude_user_id=exclude_user_id,
+        limit=limit,
+        offset=offset,
+    )

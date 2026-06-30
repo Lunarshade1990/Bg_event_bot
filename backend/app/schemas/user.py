@@ -22,3 +22,12 @@ class UserRead(BaseModel):
     bgg_username: str | None
     is_admin: bool
     is_active: bool
+
+
+class UserSummaryRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    username: str | None
+    display_name: str
+    bgg_username: str | None

@@ -46,6 +46,31 @@ class BackendAPIClient:
             response.raise_for_status()
             return response.json()
 
+    async def list_users_with_games(
+        self,
+        *,
+        exclude_user_id: int | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[dict]:
+        params = {
+            "has_games": True,
+            "exclude_user_id": exclude_user_id,
+            "limit": limit,
+            "offset": offset,
+        }
+        filtered_params = {key: value for key, value in params.items() if value is not None}
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.get("/api/users", params=filtered_params)
+            response.raise_for_status()
+            return response.json()
+
+    async def get_user(self, user_id: int) -> dict:
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.get(f"/api/users/{user_id}")
+            response.raise_for_status()
+            return response.json()
+
     async def list_games(
         self,
         *,

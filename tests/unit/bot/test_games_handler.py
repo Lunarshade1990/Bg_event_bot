@@ -1,7 +1,10 @@
 from bot.app.handlers.games import (
+    _format_games_list_text,
     _format_grouped_game_line,
     _format_my_games_text,
+    _format_user_display_name,
     _parse_offset,
+    _parse_other_games_callback,
 )
 from bot.app.services.game_service import (
     _build_grouped_entry,
@@ -165,3 +168,36 @@ def test_parse_offset_returns_none_for_invalid_callback_data() -> None:
     assert _parse_offset("my_games:not-a-number") is None
     assert _parse_offset("other:10") is None
     assert _parse_offset(None) is None
+
+
+def test_format_user_display_name_prefers_username() -> None:
+    assert _format_user_display_name({"username": "alice", "display_name": "Alice"}) == "@alice"
+    assert _format_user_display_name({"username": None, "display_name": "Bob"}) == "Bob"
+
+
+def test_parse_other_games_callback() -> None:
+    assert _parse_other_games_callback("other_games:12:0") == (12, 0)
+    assert _parse_other_games_callback("other_games:12:bad") is None
+
+
+def test_format_games_list_text_uses_custom_title() -> None:
+    text = _format_games_list_text(
+        "<b>Игры: @alice</b>",
+        [
+            {
+                "game": {
+                    "title": "Catan",
+                    "author": None,
+                    "play_time_minutes": 90,
+                    "game_type": "base",
+                    "has_campaign": False,
+                },
+                "expansions": [],
+                "display_min_players": 2,
+                "display_max_players": 4,
+            }
+        ],
+        offset=0,
+    )
+    assert "<b>Игры: @alice</b>" in text
+    assert "1. <b>Catan</b>" in text

@@ -2,6 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.db.models.user import User
+from backend.app.db.models.user_game import UserGame
 from backend.app.schemas.user import UserTelegramSyncRequest
 
 
@@ -17,6 +18,27 @@ def get_user_by_telegram_id(db: Session, telegram_id: int) -> User | None:
 def get_user_by_bgg_username(db: Session, bgg_username: str) -> User | None:
     stmt = select(User).where(User.bgg_username == bgg_username)
     return db.scalar(stmt)
+
+
+def list_users_with_games(
+    db: Session,
+    *,
+    exclude_user_id: int | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> list[User]:
+    stmt = (
+        select(User)
+        .join(UserGame, UserGame.user_id == User.id)
+        .where(User.is_active.is_(True))
+        .distinct()
+        .order_by(User.display_name.asc())
+        .limit(limit)
+        .offset(offset)
+    )
+    if exclude_user_id is not None:
+        stmt = stmt.where(User.id != exclude_user_id)
+    return list(db.scalars(stmt).all())
 
 
 def upsert_user_by_telegram(db: Session, payload: UserTelegramSyncRequest, display_name: str) -> User:

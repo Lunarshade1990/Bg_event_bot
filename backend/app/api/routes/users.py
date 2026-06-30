@@ -1,11 +1,30 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from backend.app.dependencies.db import get_db
-from backend.app.schemas.user import UserRead, UserTelegramSyncRequest
+from backend.app.schemas.user import UserRead, UserSummaryRead, UserTelegramSyncRequest
 from backend.app.services import users as user_service
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+@router.get("", response_model=list[UserSummaryRead])
+def list_users(
+    db: Session = Depends(get_db),
+    has_games: bool = Query(default=True),
+    exclude_user_id: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> list[UserSummaryRead]:
+    if not has_games:
+        return []
+    users = user_service.list_users_with_games(
+        db,
+        exclude_user_id=exclude_user_id,
+        limit=limit,
+        offset=offset,
+    )
+    return [UserSummaryRead.model_validate(user) for user in users]
 
 
 @router.post("/telegram", response_model=UserRead, status_code=status.HTTP_200_OK)

@@ -1,7 +1,7 @@
 import logging
 from html import escape
 from io import BytesIO
-from typing import cast
+from typing import Literal, cast
 
 import httpx
 from aiogram import Bot, F, Router
@@ -60,6 +60,7 @@ from bot.app.utils.meetup_datetime import (
 )
 
 router = Router(name="meetups")
+logger = logging.getLogger(__name__)
 
 SKIP_COMMENT_VALUES = {"-", "пропустить", "skip"}
 
@@ -694,7 +695,7 @@ async def join_meetup(callback: CallbackQuery) -> None:
         return
 
     try:
-        await backend_client.join_meetup(meetup_id, user_id=profile["id"])
+        meetup = await backend_client.join_meetup(meetup_id, user_id=profile["id"])
     except httpx.HTTPStatusError as exc:
         await callback.answer(_extract_error_detail(exc), show_alert=True)
         return
@@ -702,6 +703,14 @@ async def join_meetup(callback: CallbackQuery) -> None:
         await callback.answer("Не удалось связаться с backend API.", show_alert=True)
         return
 
+    await _notify_meetup_creator_about_participation(
+        callback.bot,
+        meetup=meetup,
+        actor_user_id=profile["id"],
+        actor_profile=profile,
+        action="join",
+        backend_client=backend_client,
+    )
     await callback.answer("Ты записан на встречу.")
     await _render_meetup_details(callback, meetup_id)
 
@@ -719,7 +728,7 @@ async def leave_meetup(callback: CallbackQuery) -> None:
         return
 
     try:
-        await backend_client.leave_meetup(meetup_id, user_id=profile["id"])
+        meetup = await backend_client.leave_meetup(meetup_id, user_id=profile["id"])
     except httpx.HTTPStatusError as exc:
         await callback.answer(_extract_error_detail(exc), show_alert=True)
         return
@@ -727,6 +736,14 @@ async def leave_meetup(callback: CallbackQuery) -> None:
         await callback.answer("Не удалось связаться с backend API.", show_alert=True)
         return
 
+    await _notify_meetup_creator_about_participation(
+        callback.bot,
+        meetup=meetup,
+        actor_user_id=profile["id"],
+        actor_profile=profile,
+        action="leave",
+        backend_client=backend_client,
+    )
     await callback.answer("Участие отменено.")
     await _render_meetup_details(callback, meetup_id)
 
@@ -1672,6 +1689,79 @@ def _format_meetup_heading(meetup: dict, selected_games: list[dict] | None = Non
         first_game_title = escape(str(selected_games[0].get("title") or "Встреча"))
         return f"<b>{first_game_title} {weekday_time}</b>"
     return f"<b>{weekday_time}</b>"
+
+
+def _format_actor_display_name(profile: dict) -> str:
+    username = profile.get("username")
+    display_name = profile.get("display_name") or "Участник"
+    if username:
+        return f"@{escape(username)}"
+    return escape(display_name)
+
+
+def _format_creator_participation_notification(
+    *,
+    meetup: dict,
+    actor_display: str,
+    action: Literal["join", "leave"],
+) -> str:
+    date_label = escape(format_meetup_datetime(meetup["scheduled_at"]))
+    participants = meetup.get("participants", [])
+    joined_count = len(participants)
+    capacity = meetup["capacity_total"]
+    verb = "записался на встречу" if action == "join" else "отписался от встречи"
+    lines = [
+        f"<b>{actor_display}</b> {verb}.",
+        f"Дата: <code>{date_label}</code>",
+        f"Участников: {joined_count}/{capacity}",
+    ]
+    comment = meetup.get("comment")
+    if comment:
+        lines.append(f"Комментарий: {escape(comment)}")
+    return "\n".join(lines)
+
+
+async def _notify_meetup_creator_about_participation(
+    bot: Bot,
+    *,
+    meetup: dict,
+    actor_user_id: int,
+    actor_profile: dict,
+    action: Literal["join", "leave"],
+    backend_client: BackendAPIClient,
+) -> None:
+    creator_user_id = meetup["creator_user_id"]
+    if actor_user_id == creator_user_id:
+        return
+
+    try:
+        creator = await backend_client.get_user(creator_user_id)
+    except httpx.HTTPError:
+        logger.exception(
+            "Failed to fetch meetup creator %s for %s notification",
+            creator_user_id,
+            action,
+        )
+        return
+
+    text = _format_creator_participation_notification(
+        meetup=meetup,
+        actor_display=_format_actor_display_name(actor_profile),
+        action=action,
+    )
+    try:
+        await bot.send_message(
+            chat_id=creator["telegram_id"],
+            text=text,
+            parse_mode="HTML",
+        )
+    except TelegramAPIError:
+        logger.exception(
+            "Failed to send %s notification to creator telegram_id=%s for meetup %s",
+            action,
+            creator["telegram_id"],
+            meetup["id"],
+        )
 
 
 def _format_participant_line(participant: dict) -> str:

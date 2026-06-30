@@ -3,7 +3,9 @@ from types import SimpleNamespace
 import pytest
 
 from bot.app.handlers.meetups import (
+    _format_actor_display_name,
     _format_create_meetup_confirmation,
+    _format_creator_participation_notification,
     _format_group_meetup_card,
     _format_meetup_details,
     _get_creation_message_ids,
@@ -321,3 +323,49 @@ async def test_receive_meetup_date_builds_letters(monkeypatch) -> None:
     assert "letters_map" in data
     assert set(data["letters_map"].keys()) == {"A", "I"}
     assert hasattr(message, "last_edited") or hasattr(message, "last_answer")
+
+
+def test_format_actor_display_name_prefers_username() -> None:
+    assert _format_actor_display_name({"username": "boardgamer", "display_name": "Board Gamer"}) == (
+        "@boardgamer"
+    )
+
+
+def test_format_actor_display_name_escapes_display_name() -> None:
+    assert _format_actor_display_name({"username": None, "display_name": "Anna & Co"}) == (
+        "Anna &amp; Co"
+    )
+
+
+def test_format_creator_participation_notification_join() -> None:
+    text = _format_creator_participation_notification(
+        meetup={
+            "scheduled_at": "2026-06-15T19:30:00+00:00",
+            "capacity_total": 6,
+            "comment": "Играем в _Catan_",
+            "participants": [{"telegram_id": 1}, {"telegram_id": 2}],
+        },
+        actor_display="@alice",
+        action="join",
+    )
+
+    assert "<b>@alice</b> записался на встречу." in text
+    assert "Участников: 2/6" in text
+    assert "Играем в _Catan_" in text
+
+
+def test_format_creator_participation_notification_leave_omits_comment() -> None:
+    text = _format_creator_participation_notification(
+        meetup={
+            "scheduled_at": "2026-06-15T19:30:00+00:00",
+            "capacity_total": 4,
+            "comment": None,
+            "participants": [],
+        },
+        actor_display="Bob",
+        action="leave",
+    )
+
+    assert "<b>Bob</b> отписался от встречи." in text
+    assert "Участников: 0/4" in text
+    assert "Комментарий:" not in text

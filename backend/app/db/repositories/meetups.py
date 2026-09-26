@@ -5,12 +5,14 @@ from sqlalchemy.orm import Session, selectinload
 
 from backend.app.db.models.enums import MeetupStatus, ParticipantStatus
 from backend.app.db.models.meetup import Meetup
+from backend.app.db.models.meetup_game import MeetupGame
 from backend.app.db.models.meetup_participant import MeetupParticipant
 
 
 def _meetup_load_options():
     return (
         selectinload(Meetup.participants).selectinload(MeetupParticipant.user),
+        selectinload(Meetup.meetup_games).selectinload(MeetupGame.game),
     )
 
 
@@ -26,6 +28,7 @@ def create_meetup(
     telegram_message_id: int | None = None,
     title: str | None = None,
     location: str = "",
+    game_ids: list[int] | None = None,
 ) -> Meetup:
     meetup = Meetup(
         creator_user_id=creator_user_id,
@@ -49,6 +52,16 @@ def create_meetup(
             status=ParticipantStatus.JOINED,
         )
     )
+
+    for game_id in dict.fromkeys(game_ids or []):
+        db.add(
+            MeetupGame(
+                meetup_id=meetup.id,
+                game_id=game_id,
+                added_by_user_id=creator_user_id,
+            )
+        )
+
     db.commit()
 
     loaded = get_meetup_by_id(db, meetup.id)

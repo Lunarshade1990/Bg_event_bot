@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.db.models.enums import MeetupStatus, ParticipantStatus
+from backend.app.schemas.game import GameRead
 
 
 class MeetupCreateRequest(BaseModel):
@@ -12,6 +13,7 @@ class MeetupCreateRequest(BaseModel):
     comment: str | None = Field(default=None, max_length=4000)
     telegram_chat_id: int | None = Field(default=None)
     telegram_thread_id: int | None = Field(default=None)
+    game_ids: list[int] = Field(default_factory=list)
 
 
 class MeetupJoinRequest(BaseModel):
@@ -52,3 +54,4 @@ class MeetupRead(BaseModel):
     telegram_thread_id: int | None
     telegram_message_id: int | None
     participants: list[MeetupParticipantRead]
+    games: list[GameRead] = Field(default_factory=list)

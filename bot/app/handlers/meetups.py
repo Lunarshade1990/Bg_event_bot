@@ -578,6 +578,7 @@ async def confirm_create_meetup(callback: CallbackQuery, state: FSMContext) -> N
             comment=data.get("comment"),
             telegram_chat_id=telegram_chat_id,
             telegram_thread_id=telegram_thread_id,
+            game_ids=list(data.get("selected_game_ids") or []),
         )
     except httpx.HTTPStatusError as exc:
         await callback.answer(
@@ -877,7 +878,8 @@ async def _render_meetup_details(callback: CallbackQuery, meetup_id: int) -> Non
         return
 
     is_group_context = message.chat.type in {"group", "supergroup"}
-    formatted_text = _format_group_meetup_card(meetup)
+    selected_games = meetup.get("games") or meetup.get("selected_games")
+    formatted_text = _format_group_meetup_card(meetup, selected_games=selected_games)
     if is_group_context:
         if msg.photo:
             try:
@@ -907,7 +909,7 @@ async def _render_meetup_details(callback: CallbackQuery, meetup_id: int) -> Non
             and len(meetup["participants"]) < meetup["capacity_total"]
         )
         await msg.edit_text(
-            _format_meetup_details(meetup),
+            _format_meetup_details(meetup, selected_games=meetup.get("games") or None),
             parse_mode="HTML",
             reply_markup=get_meetup_detail_keyboard(
                 meetup,
@@ -925,6 +927,7 @@ def _build_group_keyboard_for_user(meetup: dict, *, telegram_id: int):
 
 
 def _format_group_meetup_card(meetup: dict, selected_games: list[dict] | None = None) -> str:
+    games = selected_games if selected_games is not None else meetup.get("games") or []
     date_label = escape(format_meetup_datetime(meetup["scheduled_at"]))
     participants = meetup.get("participants", [])
     joined_count = len(participants)
@@ -943,7 +946,7 @@ def _format_group_meetup_card(meetup: dict, selected_games: list[dict] | None = 
     if not participant_lines:
         participant_lines = ["- пока нет участников"]
 
-    meeting_name = _format_meetup_heading(meetup, selected_games)
+    meeting_name = _format_meetup_heading(meetup, games)
     lines = [
         meeting_name,
         f"Дата: <code>{date_label}</code>",
@@ -952,10 +955,10 @@ def _format_group_meetup_card(meetup: dict, selected_games: list[dict] | None = 
     comment = meetup.get("comment")
     if comment:
         lines.append(f"Комментарий: {escape(comment)}")
-    if selected_games:
+    if games:
         lines.append("")
         lines.append("Игры:")
-        for game in selected_games:
+        for game in games:
             title = escape(str(game.get("title") or "Игры"))
             lines.append(f"- {title}")
     lines.extend(["", "<b>Участники:</b>", *participant_lines])
@@ -1656,6 +1659,7 @@ async def _ensure_forum_topic_thread_id(
 
 
 def _format_meetup_details(meetup: dict, selected_games: list[dict] | None = None) -> str:
+    games = selected_games if selected_games is not None else meetup.get("games") or []
     date_label = escape(format_meetup_datetime(meetup["scheduled_at"]))
     participants = meetup.get("participants", [])
     participant_lines = [
@@ -1664,7 +1668,7 @@ def _format_meetup_details(meetup: dict, selected_games: list[dict] | None = Non
     if not participant_lines:
         participant_lines = ["- пока никто не подтвердил участие"]
 
-    heading = _format_meetup_heading(meetup, selected_games)
+    heading = _format_meetup_heading(meetup, games)
     lines = [
         heading,
         f"Дата: <code>{date_label}</code>",
@@ -1673,10 +1677,10 @@ def _format_meetup_details(meetup: dict, selected_games: list[dict] | None = Non
     comment = meetup.get("comment")
     if comment:
         lines.append(f"Комментарий: {escape(comment)}")
-    if selected_games:
+    if games:
         lines.append("")
         lines.append("Игры:")
-        for game in selected_games:
+        for game in games:
             title = escape(str(game.get("title") or "Игры"))
             lines.append(f"- {title}")
     lines.extend(["", "Участники:", *participant_lines])

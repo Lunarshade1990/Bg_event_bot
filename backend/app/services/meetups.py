@@ -42,6 +42,11 @@ def _build_meetup_read(meetup: Meetup) -> MeetupRead:
         for participant in meetup.participants
         if participant.status == ParticipantStatus.JOINED
     ]
+    games = [
+        game
+        for meetup_game in meetup.meetup_games
+        if (game := meetup_game.game) is not None
+    ]
     return MeetupRead(
         id=meetup.id,
         scheduled_at=meetup.scheduled_at,
@@ -53,6 +58,7 @@ def _build_meetup_read(meetup: Meetup) -> MeetupRead:
         telegram_thread_id=meetup.telegram_thread_id,
         telegram_message_id=meetup.telegram_message_id,
         participants=participants,
+        games=games,
     )
 
 
@@ -71,6 +77,7 @@ def create_meetup(db: Session, payload: MeetupCreateRequest) -> MeetupRead:
         telegram_thread_id=payload.telegram_thread_id,
         title=None,
         location="",
+        game_ids=payload.game_ids,
     )
     return _build_meetup_read(meetup)
 

@@ -2,6 +2,8 @@ from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
+from backend.app.db.models.enums import CampaignSource, GameType
+from backend.app.db.models.game import Game
 from tests.fixtures.meetups import make_meetup, make_user
 
 
@@ -35,6 +37,44 @@ def test_create_meetup_adds_creator_as_participant(
     assert len(payload["participants"]) == 1
     assert payload["participants"][0]["telegram_id"] == 20001
     assert payload["participants"][0]["status"] == "joined"
+
+
+def test_create_meetup_persists_game_ids_in_response(
+    client: TestClient,
+    db_session,
+    api_headers: dict[str, str],
+) -> None:
+    creator = make_user(db_session, telegram_id=20009, display_name="Creator")
+    game = Game(
+        bgg_id=1001,
+        title="Catan",
+        author="Klaus Teuber",
+        min_players=3,
+        max_players=4,
+        play_time_minutes=90,
+        game_type=GameType.BASE,
+        has_campaign=False,
+        campaign_source=CampaignSource.UNKNOWN,
+    )
+    db_session.add(game)
+    db_session.commit()
+
+    response = client.post(
+        "/api/meetups",
+        headers=api_headers,
+        json={
+            "creator_user_id": creator.id,
+            "scheduled_at": "2026-06-15T19:30:00+00:00",
+            "capacity_total": 4,
+            "game_ids": [game.id],
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert len(payload["games"]) == 1
+    assert payload["games"][0]["id"] == game.id
+    assert payload["games"][0]["title"] == "Catan"
 
 
 def test_create_meetup_with_telegram_thread_data(

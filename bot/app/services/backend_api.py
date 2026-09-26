@@ -127,6 +127,7 @@ class BackendAPIClient:
         comment: str | None = None,
         telegram_chat_id: int | None = None,
         telegram_thread_id: int | None = None,
+        game_ids: list[int] | None = None,
     ) -> dict:
         payload = {
             "creator_user_id": creator_user_id,
@@ -135,6 +136,7 @@ class BackendAPIClient:
             "comment": comment,
             "telegram_chat_id": telegram_chat_id,
             "telegram_thread_id": telegram_thread_id,
+            "game_ids": game_ids or [],
         }
         async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
             response = await client.post("/api/meetups", json=payload)

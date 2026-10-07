@@ -1,8 +1,8 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
-from backend.app.db.models.enums import CampaignSource, GameType
+from backend.app.db.models.enums import CampaignSource, GameType, MeetupStatus
 from backend.app.db.models.game import Game
 from tests.fixtures.meetups import make_meetup, make_user
 
@@ -167,7 +167,7 @@ def test_list_and_get_meetup(
     meetup = make_meetup(
         db_session,
         creator,
-        scheduled_at=datetime(2026, 7, 1, 12, 0, tzinfo=UTC),
+        scheduled_at=datetime.now(UTC) + timedelta(days=1),
         capacity_total=3,
         comment="Friday games",
     )
@@ -184,6 +184,45 @@ def test_list_and_get_meetup(
     assert get_response.json()["comment"] == "Friday games"
 
 
+def test_list_meetups_separates_upcoming_and_archive(
+    client: TestClient,
+    db_session,
+    api_headers: dict[str, str],
+) -> None:
+    creator = make_user(db_session, telegram_id=20011, display_name="Archive tester")
+    now = datetime.now(UTC)
+    upcoming = make_meetup(
+        db_session,
+        creator,
+        scheduled_at=now + timedelta(days=2),
+        capacity_total=4,
+    )
+    past = make_meetup(
+        db_session,
+        creator,
+        scheduled_at=now - timedelta(days=2),
+        capacity_total=4,
+    )
+    past.status = MeetupStatus.COMPLETED
+    db_session.commit()
+
+    upcoming_response = client.get(
+        "/api/meetups",
+        headers=api_headers,
+        params={"archive": False},
+    )
+    archive_response = client.get(
+        "/api/meetups",
+        headers=api_headers,
+        params={"archive": True},
+    )
+
+    assert upcoming_response.status_code == 200
+    assert archive_response.status_code == 200
+    assert {item["id"] for item in upcoming_response.json()} == {upcoming.id}
+    assert {item["id"] for item in archive_response.json()} == {past.id}
+
+
 def test_list_meetups_filter_by_telegram_chat_id(
     client: TestClient,
     db_session,
@@ -193,7 +232,7 @@ def test_list_meetups_filter_by_telegram_chat_id(
     make_meetup(
         db_session,
         creator,
-        scheduled_at=datetime(2026, 8, 1, 18, 0, tzinfo=UTC),
+        scheduled_at=datetime.now(UTC) + timedelta(days=1),
         capacity_total=4,
         comment="Group meetup",
         telegram_chat_id=123456,
@@ -202,7 +241,7 @@ def test_list_meetups_filter_by_telegram_chat_id(
     make_meetup(
         db_session,
         creator,
-        scheduled_at=datetime(2026, 8, 2, 18, 0, tzinfo=UTC),
+        scheduled_at=datetime.now(UTC) + timedelta(days=2),
         capacity_total=4,
         comment="Another meetup",
     )

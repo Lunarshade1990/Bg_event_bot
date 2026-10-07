@@ -2,6 +2,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from bot.app.keyboards.meetups import (
+    get_meetups_list_keyboard,
+    get_meetups_menu_keyboard,
+)
 from bot.app.handlers.meetups import (
     _format_actor_display_name,
     _format_create_meetup_confirmation,
@@ -14,6 +18,33 @@ from bot.app.handlers.meetups import (
     receive_meetup_date,
     skip_game_selection,
 )
+
+
+def test_meetups_menu_has_separate_upcoming_and_archive_buttons() -> None:
+    keyboard = get_meetups_menu_keyboard()
+    labels = {button.text for row in keyboard.keyboard for button in row}
+
+    assert "Запланированные встречи" in labels
+    assert "Архив встреч" in labels
+    assert "Список встреч" not in labels
+
+
+def test_meetups_list_keyboard_switches_category_and_preserves_item_context() -> None:
+    upcoming_keyboard = get_meetups_list_keyboard(
+        [
+            {
+                "id": 42,
+                "scheduled_at": "2026-10-08T18:00:00+00:00",
+                "capacity_total": 4,
+                "participants": [],
+            }
+        ],
+    )
+    archive_keyboard = get_meetups_list_keyboard([], archive=True)
+
+    assert upcoming_keyboard.inline_keyboard[0][0].callback_data == "meetup:42:upcoming"
+    assert upcoming_keyboard.inline_keyboard[-1][0].callback_data == "meetup_list:archive"
+    assert archive_keyboard.inline_keyboard[-1][0].callback_data == "meetup_list:upcoming"
 
 
 def test_format_meetup_details_escapes_user_content() -> None:

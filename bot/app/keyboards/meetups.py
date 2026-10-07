@@ -11,6 +11,7 @@ from aiogram.types import (
 from bot.app.utils.meetup_datetime import format_meetup_datetime
 
 MEETUP_CALLBACK_PREFIX = "meetup"
+MEETUP_LIST_CALLBACK_PREFIX = "meetup_list"
 MEETUP_JOIN_CALLBACK_PREFIX = "meetup_join"
 MEETUP_LEAVE_CALLBACK_PREFIX = "meetup_leave"
 MEETUP_DELETE_CALLBACK_PREFIX = "meetup_delete"
@@ -31,26 +32,40 @@ MEETUP_GAME_SKIP_CALLBACK = "meetup_game_skip"
 def get_meetups_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [
-                KeyboardButton(text="Создать встречу"),
-                KeyboardButton(text="Список встреч"),
-            ],
+            [KeyboardButton(text="Создать встречу")],
+            [KeyboardButton(text="Запланированные встречи")],
+            [KeyboardButton(text="Архив встреч")],
             [KeyboardButton(text="Назад")],
         ],
         resize_keyboard=True,
     )
 
 
-def get_meetups_list_keyboard(meetups: list[dict]) -> InlineKeyboardMarkup:
+def get_meetups_list_keyboard(
+    meetups: list[dict],
+    *,
+    archive: bool = False,
+) -> InlineKeyboardMarkup:
+    category = "archive" if archive else "upcoming"
     rows = [
         [
             InlineKeyboardButton(
                 text=_format_meetup_button_label(meetup),
-                callback_data=f"{MEETUP_CALLBACK_PREFIX}:{meetup['id']}",
+                callback_data=f"{MEETUP_CALLBACK_PREFIX}:{meetup['id']}:{category}",
             )
         ]
         for meetup in meetups
     ]
+    target_category = "upcoming" if archive else "archive"
+    target_label = "Запланированные встречи" if archive else "Архив встреч"
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=target_label,
+                callback_data=f"{MEETUP_LIST_CALLBACK_PREFIX}:{target_category}",
+            )
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -59,6 +74,7 @@ def get_meetup_detail_keyboard(
     *,
     current_user_id: int,
     can_join: bool,
+    archive: bool = False,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
@@ -86,7 +102,11 @@ def get_meetup_detail_keyboard(
         [
             InlineKeyboardButton(
                 text="К списку встреч",
-                callback_data=f"{MEETUP_CALLBACK_PREFIX}:list",
+                    callback_data=(
+                        f"{MEETUP_LIST_CALLBACK_PREFIX}:archive"
+                        if archive
+                        else f"{MEETUP_LIST_CALLBACK_PREFIX}:upcoming"
+                    ),
             )
         ]
     )

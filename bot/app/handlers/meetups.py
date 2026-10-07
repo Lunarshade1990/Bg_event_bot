@@ -34,6 +34,7 @@ from bot.app.keyboards.meetups import (
     MEETUP_GAME_SKIP_CALLBACK,
     MEETUP_GAME_TOGGLE_CALLBACK_PREFIX,
     MEETUP_JOIN_CALLBACK_PREFIX,
+    MEETUP_LIST_CALLBACK_PREFIX,
     MEETUP_LEAVE_CALLBACK_PREFIX,
     get_create_meetup_comment_keyboard,
     get_create_meetup_confirm_keyboard,
@@ -648,22 +649,33 @@ async def confirm_create_meetup(callback: CallbackQuery, state: FSMContext) -> N
     await callback.answer("Встреча создана.")
 
 
+@router.message(F.text == "Запланированные встречи")
 @router.message(F.text == "Список встреч")
 async def list_meetups(message: Message) -> None:
     if not await _ensure_profile(message):
         return
 
-    await _send_meetups_list(message)
+    await _send_meetups_list(message, archive=False)
+
+
+@router.message(F.text == "Архив встреч")
+async def list_archived_meetups(message: Message) -> None:
+    if not await _ensure_profile(message):
+        return
+
+    await _send_meetups_list(message, archive=True)
 
 
 @router.callback_query(F.data == f"{MEETUP_CALLBACK_PREFIX}:list")
+@router.callback_query(F.data.startswith(f"{MEETUP_LIST_CALLBACK_PREFIX}:"))
 async def list_meetups_callback(callback: CallbackQuery) -> None:
     message = callback.message
     if message is None:
         await callback.answer("Не удалось обновить список.", show_alert=True)
         return
 
-    await _send_meetups_list(cast(Message, message), edit_message=True)
+    archive = (callback.data or "").endswith(":archive")
+    await _send_meetups_list(cast(Message, message), archive=archive, edit_message=True)
     answer = getattr(callback, "answer", None)
     if callable(answer):
         await callback.answer()
@@ -674,12 +686,24 @@ async def show_meetup_details(callback: CallbackQuery) -> None:
     if callback.data == f"{MEETUP_CALLBACK_PREFIX}:list":
         return
 
-    meetup_id = _parse_meetup_id(callback.data, MEETUP_CALLBACK_PREFIX)
+    callback_parts = (callback.data or "").split(":")
+    if len(callback_parts) not in {2, 3}:
+        await callback.answer("Некорректная встреча.", show_alert=True)
+        return
+    if len(callback_parts) == 3 and callback_parts[2] not in {"upcoming", "archive"}:
+        await callback.answer("Некорректная встреча.", show_alert=True)
+        return
+
+    meetup_id = _parse_meetup_id(":".join(callback_parts[:2]), MEETUP_CALLBACK_PREFIX)
     if meetup_id is None:
         await callback.answer("Некорректная встреча.", show_alert=True)
         return
 
-    await _render_meetup_details(callback, meetup_id)
+    await _render_meetup_details(
+        callback,
+        meetup_id,
+        archive=len(callback_parts) == 3 and callback_parts[2] == "archive",
+    )
 
 
 @router.callback_query(F.data.startswith(f"{MEETUP_JOIN_CALLBACK_PREFIX}:"))
@@ -825,10 +849,27 @@ async def _ensure_profile(message: Message) -> bool:
     return True
 
 
-async def _send_meetups_list(message: Message, *, edit_message: bool = False) -> None:
+async def _send_meetups_list(
+    message: Message,
+    *,
+    archive: bool = False,
+    edit_message: bool = False,
+) -> None:
     backend_client = BackendAPIClient()
     try:
-        meetups = await backend_client.list_meetups()
+        meetups: list[dict] = []
+        limit = 100
+        offset = 0
+        while True:
+            batch = await backend_client.list_meetups(
+                archive=archive,
+                limit=limit,
+                offset=offset,
+            )
+            meetups.extend(batch)
+            if len(batch) < limit:
+                break
+            offset += limit
     except httpx.HTTPError:
         text = "Не удалось загрузить список встреч."
         if edit_message:
@@ -837,23 +878,25 @@ async def _send_meetups_list(message: Message, *, edit_message: bool = False) ->
             await message.answer(text, reply_markup=get_meetups_menu_keyboard())
         return
 
-    if not meetups:
-        text = "Пока нет запланированных встреч."
-        if edit_message:
-            await message.edit_text(text)
-        else:
-            await message.answer(text, reply_markup=get_meetups_menu_keyboard())
-        return
-
-    text = "Запланированные встречи:\nНажми на встречу, чтобы открыть детали."
-    keyboard = get_meetups_list_keyboard(meetups)
+    title = "Архив встреч" if archive else "Запланированные встречи"
+    text = (
+        f"{title}:\nНажми на встречу, чтобы открыть детали."
+        if meetups
+        else ("В архиве пока нет встреч." if archive else "Пока нет запланированных встреч.")
+    )
+    keyboard = get_meetups_list_keyboard(meetups, archive=archive)
     if edit_message:
         await message.edit_text(text, reply_markup=keyboard)
     else:
         await message.answer(text, reply_markup=keyboard)
 
 
-async def _render_meetup_details(callback: CallbackQuery, meetup_id: int) -> None:
+async def _render_meetup_details(
+    callback: CallbackQuery,
+    meetup_id: int,
+    *,
+    archive: bool = False,
+) -> None:
     message = callback.message
     if message is None:
         await callback.answer("Не удалось открыть встречу.", show_alert=True)
@@ -905,7 +948,9 @@ async def _render_meetup_details(callback: CallbackQuery, meetup_id: int) -> Non
     else:
         joined_user_ids = {participant["telegram_id"] for participant in meetup["participants"]}
         can_join = (
-            user.id not in joined_user_ids
+            not archive
+            and meetup["status"] == "planned"
+            and user.id not in joined_user_ids
             and len(meetup["participants"]) < meetup["capacity_total"]
         )
         await msg.edit_text(
@@ -915,6 +960,7 @@ async def _render_meetup_details(callback: CallbackQuery, meetup_id: int) -> Non
                 meetup,
                 current_user_id=profile["id"],
                 can_join=can_join,
+                archive=archive,
             ),
         )
     await callback.answer()

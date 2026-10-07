@@ -1,9 +1,9 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from backend.app.db.models.enums import MeetupStatus, ParticipantStatus
+from backend.app.db.models.enums import ParticipantStatus
 from backend.app.db.models.meetup import Meetup
 from backend.app.db.models.meetup_game import MeetupGame
 from backend.app.db.models.meetup_participant import MeetupParticipant
@@ -80,12 +80,17 @@ def get_meetup_by_id(db: Session, meetup_id: int, *, load_participants: bool = T
 def list_meetups(
     db: Session,
     *,
-    status: MeetupStatus = MeetupStatus.PLANNED,
+    archive: bool = False,
     telegram_chat_id: int | None = None,
     limit: int = 20,
     offset: int = 0,
 ) -> list[Meetup]:
-    stmt = select(Meetup).where(Meetup.status == status)
+    stmt = select(Meetup)
+    now = datetime.now(UTC)
+    if archive:
+        stmt = stmt.where(Meetup.scheduled_at < now)
+    else:
+        stmt = stmt.where(Meetup.scheduled_at >= now)
     if telegram_chat_id is not None:
         stmt = stmt.where(Meetup.telegram_chat_id == telegram_chat_id)
     stmt = (

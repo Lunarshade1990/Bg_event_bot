@@ -92,12 +92,14 @@ def get_meetup(db: Session, meetup_id: int) -> MeetupRead | None:
 def list_meetups(
     db: Session,
     *,
+    archive: bool = False,
     telegram_chat_id: int | None = None,
     limit: int = 20,
     offset: int = 0,
 ) -> list[MeetupRead]:
     meetups = meetup_repository.list_meetups(
         db,
+        archive=archive,
         telegram_chat_id=telegram_chat_id,
         limit=limit,
         offset=offset,

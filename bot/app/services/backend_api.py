@@ -146,11 +146,12 @@ class BackendAPIClient:
     async def list_meetups(
         self,
         *,
+        archive: bool = False,
         telegram_chat_id: int | None = None,
         limit: int = 20,
         offset: int = 0,
     ) -> list[dict]:
-        params = {"limit": limit, "offset": offset}
+        params = {"limit": limit, "offset": offset, "archive": archive}
         if telegram_chat_id is not None:
             params["telegram_chat_id"] = telegram_chat_id
         async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:

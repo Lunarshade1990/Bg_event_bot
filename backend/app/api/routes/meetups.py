@@ -34,10 +34,12 @@ def list_meetups(
     db: Session = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    archive: bool = Query(default=False),
     telegram_chat_id: int | None = Query(default=None),
 ) -> list[MeetupRead]:
     return meetup_service.list_meetups(
         db,
+        archive=archive,
         telegram_chat_id=telegram_chat_id,
         limit=limit,
         offset=offset,

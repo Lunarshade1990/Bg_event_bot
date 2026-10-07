@@ -59,7 +59,8 @@ def upsert_user_by_telegram(db: Session, payload: UserTelegramSyncRequest, displ
         user.first_name = payload.first_name
         user.last_name = payload.last_name
         user.display_name = display_name
-        user.bgg_username = payload.bgg_username
+        if "bgg_username" in payload.model_fields_set:
+            user.bgg_username = payload.bgg_username
 
     db.commit()
     db.refresh(user)

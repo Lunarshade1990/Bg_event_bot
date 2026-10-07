@@ -26,6 +26,34 @@ def test_sync_telegram_user_creates_user(client: TestClient, api_headers: dict[s
     assert body["bgg_username"] == "alice_bgg"
 
 
+def test_sync_telegram_user_without_bgg_username_preserves_existing_value(
+    client: TestClient,
+    api_headers: dict[str, str],
+) -> None:
+    initial_response = client.post(
+        "/api/users/telegram",
+        headers=api_headers,
+        json={
+            "telegram_id": 123457,
+            "username": "boardgamer",
+            "bgg_username": "boardgamer_bgg",
+        },
+    )
+    assert initial_response.status_code == 200
+
+    sync_response = client.post(
+        "/api/users/telegram",
+        headers=api_headers,
+        json={
+            "telegram_id": 123457,
+            "username": "boardgamer",
+        },
+    )
+
+    assert sync_response.status_code == 200
+    assert sync_response.json()["bgg_username"] == "boardgamer_bgg"
+
+
 def test_get_user_by_telegram_id_returns_synced_user(
     client: TestClient,
     api_headers: dict[str, str],

@@ -5,10 +5,6 @@ from backend.app.db.repositories import users as user_repository
 from backend.app.schemas.user import UserTelegramSyncRequest
 
 
-class BggUsernameAlreadyBoundError(ValueError):
-    """Raised when a BGG username is already attached to another user."""
-
-
 def _build_display_name(payload: UserTelegramSyncRequest) -> str:
     if payload.display_name:
         return payload.display_name.strip()
@@ -23,14 +19,6 @@ def _build_display_name(payload: UserTelegramSyncRequest) -> str:
 
 def sync_telegram_user(db: Session, payload: UserTelegramSyncRequest) -> User:
     display_name = _build_display_name(payload)
-
-    if payload.bgg_username:
-        existing = user_repository.get_user_by_bgg_username(db, payload.bgg_username)
-        if existing is not None and existing.telegram_id != payload.telegram_id:
-            raise BggUsernameAlreadyBoundError(
-                "This BGG username is already linked to another user."
-            )
-
     return user_repository.upsert_user_by_telegram(db, payload, display_name)
 
 

@@ -54,6 +54,23 @@ def test_sync_telegram_user_without_bgg_username_preserves_existing_value(
     assert sync_response.json()["bgg_username"] == "boardgamer_bgg"
 
 
+def test_sync_telegram_users_can_share_bgg_username(
+    client: TestClient,
+    api_headers: dict[str, str],
+) -> None:
+    for telegram_id in (123458, 123459):
+        response = client.post(
+            "/api/users/telegram",
+            headers=api_headers,
+            json={
+                "telegram_id": telegram_id,
+                "bgg_username": "shared_collection",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["bgg_username"] == "shared_collection"
+
+
 def test_get_user_by_telegram_id_returns_synced_user(
     client: TestClient,
     api_headers: dict[str, str],

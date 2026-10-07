@@ -183,6 +183,43 @@ def test_import_bgg_collection_creates_games_and_ownership(
     assert expansion.bgg_expands_ids_cached == [1001]
 
 
+def test_users_sharing_bgg_username_share_the_same_game_records(
+    client: TestClient,
+    db_session,
+    api_headers: dict[str, str],
+    monkeypatch,
+) -> None:
+    user_ids = []
+    for telegram_id in (987655, 987656):
+        response = client.post(
+            "/api/users/telegram",
+            headers=api_headers,
+            json={
+                "telegram_id": telegram_id,
+                "display_name": f"User {telegram_id}",
+                "bgg_username": "shared_collection",
+            },
+        )
+        assert response.status_code == 200
+        user_ids.append(response.json()["id"])
+
+    monkeypatch.setattr("backend.app.services.bgg_import.get_bgg_client", lambda: FakeBGGClient())
+
+    for telegram_id in (987655, 987656):
+        response = client.post(
+            "/api/imports/bgg/collection",
+            headers=api_headers,
+            json={"telegram_id": telegram_id},
+        )
+        assert response.status_code == 200
+
+    shared_games = db_session.query(Game).filter(Game.bgg_id.in_([1001, 1002, 1003])).all()
+    assert len(shared_games) == 3
+    for user_id in user_ids:
+        user_game_count = db_session.query(UserGame).filter(UserGame.user_id == user_id).count()
+        assert user_game_count == 3
+
+
 def test_import_bgg_collection_stores_zero_play_time_as_null(
     client: TestClient,
     db_session,

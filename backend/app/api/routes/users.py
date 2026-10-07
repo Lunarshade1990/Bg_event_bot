@@ -32,11 +32,7 @@ def sync_telegram_user(
     payload: UserTelegramSyncRequest,
     db: Session = Depends(get_db),
 ) -> UserRead:
-    try:
-        user = user_service.sync_telegram_user(db, payload)
-    except user_service.BggUsernameAlreadyBoundError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-
+    user = user_service.sync_telegram_user(db, payload)
     return UserRead.model_validate(user)
 
 

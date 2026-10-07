@@ -71,6 +71,7 @@ async def receive_bgg_username(message: Message, state: FSMContext) -> None:
         await message.answer("Не удалось связаться с backend API.")
         return
 
+    await state.clear()
     await message.answer(f"Импортирую коллекцию для `{bgg_username}`...", parse_mode="Markdown")
     await _run_import(
         message=message,
@@ -78,7 +79,6 @@ async def receive_bgg_username(message: Message, state: FSMContext) -> None:
         telegram_id=user.id,
         bgg_username=bgg_username,
     )
-    await state.clear()
 
 
 async def _run_import(

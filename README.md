@@ -103,6 +103,47 @@ docker compose --env-file .env -f docker/docker-compose.yml down
 PostgreSQL хранит данные в именованном Docker volume `docker_postgres_data`. Старый локальный
 каталог `docker/postgres/data` больше не используется этим compose-файлом.
 
+## Безопасный запуск на VPS
+
+Бот использует Telegram long polling, поэтому входящие подключения к контейнерам не нужны.
+Порты PostgreSQL и backend опубликованы только на `127.0.0.1` хоста; не меняйте адрес на
+`0.0.0.0` и не открывайте эти порты в firewall. Для работы бота нужны исходящие HTTPS-
+подключения к Telegram и, если используется импорт BGG, к BoardGameGeek.
+
+1. Установите Docker Engine и Compose plugin из официального репозитория для вашей ОС.
+   Ограничьте SSH доступ доверенными IP-адресами и оставьте firewall закрытым для остальных
+   входящих портов. Публичный HTTP(S)-reverse proxy для этого бота не требуется.
+2. Клонируйте проект на сервер и создайте `.env` из шаблона. Замените все значения-заглушки:
+   используйте токен Telegram из BotFather, а для `DB_PASSWORD` и `INTERNAL_API_TOKEN`
+   сгенерируйте разные случайные секреты (например, `openssl rand -hex 32`). При включенном
+   импорте BGG укажите действующий `BGG_ACCESS_TOKEN`.
+3. Установите права на файл секретов и убедитесь, что он не попал в Git:
+
+   ```sh
+   chmod 600 .env
+   git check-ignore .env
+   ```
+
+   Не публикуйте `.env` и не передавайте его в логи. Переменные окружения доступны
+   администраторам Docker-хоста.
+4. Проверьте конфигурацию и запустите весь стек:
+
+   ```sh
+   docker compose --env-file .env -f docker/docker-compose.yml config --quiet
+   docker compose --env-file .env -f docker/docker-compose.yml up -d --build
+   docker compose --env-file .env -f docker/docker-compose.yml ps
+   ```
+
+5. Если контейнер не стал `healthy`/`running`, изучите логи:
+
+   ```sh
+   docker compose --env-file .env -f docker/docker-compose.yml logs backend bot migrate
+   ```
+
+   Обновляйте приложение через `up -d --build`; для резервных копий регулярно сохраняйте
+   PostgreSQL вне VPS. Команда `down` оставляет volume с данными; не используйте `down -v`,
+   если не хотите удалить базу.
+
 ## Что будет следующим шагом
 
 - SQLAlchemy-модели

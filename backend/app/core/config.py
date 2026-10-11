@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = Field(default="replace_me", alias="TELEGRAM_BOT_TOKEN")
     bgg_access_token: str = Field(default="replace_me", alias="BGG_ACCESS_TOKEN")
-    internal_api_token: str = Field(default="replace_me", alias="INTERNAL_API_TOKEN")
+    internal_api_token: str = Field(min_length=32, alias="INTERNAL_API_TOKEN")
 
     backend_host: str = Field(default="127.0.0.1", alias="BACKEND_HOST")
     backend_port: int = Field(default=8000, alias="BACKEND_PORT")

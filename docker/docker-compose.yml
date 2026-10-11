@@ -3,14 +3,12 @@ services:
     image: postgres:16
     container_name: boardgames_meetup_postgres
     restart: unless-stopped
-    env_file:
-      - ../.env
     environment:
       POSTGRES_DB: ${DB_NAME:-boardgames_meetup_bot}
       POSTGRES_USER: ${DB_USER:-boardgames_user}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
     ports:
-      - "${DB_PORT:-5432}:5432"
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -54,13 +52,13 @@ services:
       BACKEND_PORT: 8000
       BACKEND_BASE_URL: http://backend:8000
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    command: ["sh", "-c", "/usr/local/bin/wait-for-postgres && alembic upgrade head && uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"]
+    command: ["sh", "-c", "/usr/local/bin/wait-for-postgres && alembic upgrade head && exec uvicorn backend.app.main:app --host 0.0.0.0 --port 8000"]
     healthcheck:
       test:
         [

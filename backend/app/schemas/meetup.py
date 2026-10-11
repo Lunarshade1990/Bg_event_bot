@@ -24,6 +24,12 @@ class MeetupLeaveRequest(BaseModel):
     user_id: int = Field(..., ge=1)
 
 
+class MeetupGameSuggestionRequest(BaseModel):
+    proposer_user_id: int = Field(..., ge=1)
+    collection_owner_user_id: int = Field(..., ge=1)
+    game_ids: list[int] = Field(..., min_length=1)
+
+
 class MeetupTelegramMessageRequest(BaseModel):
     telegram_message_id: int = Field(..., ge=1)
 
@@ -41,6 +47,19 @@ class MeetupParticipantRead(BaseModel):
     status: ParticipantStatus
 
 
+class MeetupProposalSourceRead(BaseModel):
+    user_id: int
+    display_name: str
+    username: str | None
+
+
+class MeetupGameSuggestionRead(BaseModel):
+    proposer_user_id: int
+    display_name: str
+    username: str | None
+    games: list[GameRead]
+
+
 class MeetupRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -55,3 +74,5 @@ class MeetupRead(BaseModel):
     telegram_message_id: int | None
     participants: list[MeetupParticipantRead]
     games: list[GameRead] = Field(default_factory=list)
+    proposal_sources: list[MeetupProposalSourceRead] = Field(default_factory=list)
+    game_suggestions: list[MeetupGameSuggestionRead] = Field(default_factory=list)

@@ -1,12 +1,15 @@
 from sqlalchemy.orm import Session
 
-from backend.app.db.models.enums import MeetupStatus, ParticipantStatus
+from backend.app.db.models.enums import GameType, MeetupStatus, ParticipantStatus
 from backend.app.db.models.meetup import Meetup
+from backend.app.db.repositories import games as game_repository
 from backend.app.db.repositories import meetups as meetup_repository
 from backend.app.db.repositories import users as user_repository
 from backend.app.schemas.meetup import (
     MeetupCreateRequest,
+    MeetupGameSuggestionRead,
     MeetupParticipantRead,
+    MeetupProposalSourceRead,
     MeetupRead,
 )
 
@@ -31,6 +34,10 @@ class MeetupAlreadyJoinedError(ValueError):
     """Raised when a user is already a joined participant."""
 
 
+class MeetupSuggestionNotAllowedError(ValueError):
+    """Raised when a suggestion is outside the meetup or collection rules."""
+
+
 def _build_meetup_read(meetup: Meetup) -> MeetupRead:
     participants = [
         MeetupParticipantRead(
@@ -47,6 +54,48 @@ def _build_meetup_read(meetup: Meetup) -> MeetupRead:
         for meetup_game in meetup.meetup_games
         if (game := meetup_game.game) is not None
     ]
+    proposal_sources = []
+    creator = meetup.creator
+    if any(user_game.game.game_type == GameType.BASE for user_game in creator.user_games):
+        proposal_sources.append(
+            MeetupProposalSourceRead(
+                user_id=creator.id,
+                display_name=creator.display_name,
+                username=creator.username,
+            )
+        )
+    for participant in sorted(
+        meetup.participants,
+        key=lambda entry: (entry.user.display_name.casefold(), entry.user.id),
+    ):
+        user = participant.user
+        if (
+            participant.status == ParticipantStatus.JOINED
+            and user.id != meetup.creator_user_id
+            and any(user_game.game.game_type == GameType.BASE for user_game in user.user_games)
+        ):
+            proposal_sources.append(
+                MeetupProposalSourceRead(
+                    user_id=user.id,
+                    display_name=user.display_name,
+                    username=user.username,
+                )
+            )
+
+    suggestions_by_proposer: dict[int, MeetupGameSuggestionRead] = {}
+    for suggestion in sorted(meetup.game_suggestions, key=lambda entry: entry.id):
+        proposer = suggestion.proposer
+        grouped = suggestions_by_proposer.get(proposer.id)
+        if grouped is None:
+            grouped = MeetupGameSuggestionRead(
+                proposer_user_id=proposer.id,
+                display_name=proposer.display_name,
+                username=proposer.username,
+                games=[],
+            )
+            suggestions_by_proposer[proposer.id] = grouped
+        grouped.games.append(suggestion.game)
+
     return MeetupRead(
         id=meetup.id,
         scheduled_at=meetup.scheduled_at,
@@ -59,6 +108,8 @@ def _build_meetup_read(meetup: Meetup) -> MeetupRead:
         telegram_message_id=meetup.telegram_message_id,
         participants=participants,
         games=games,
+        proposal_sources=proposal_sources,
+        game_suggestions=list(suggestions_by_proposer.values()),
     )
 
 
@@ -153,6 +204,60 @@ def leave_meetup(db: Session, meetup_id: int, user_id: int) -> MeetupRead:
             status=ParticipantStatus.CANCELLED,
         )
 
+    refreshed = meetup_repository.get_meetup_by_id(db, meetup_id)
+    if refreshed is None:
+        raise MeetupNotFoundError("Meetup not found.")
+    return _build_meetup_read(refreshed)
+
+
+def suggest_meetup_games(
+    db: Session,
+    *,
+    meetup_id: int,
+    proposer_user_id: int,
+    collection_owner_user_id: int,
+    game_ids: list[int],
+) -> MeetupRead:
+    meetup = meetup_repository.get_meetup_by_id(db, meetup_id)
+    if meetup is None:
+        raise MeetupNotFoundError("Meetup not found.")
+    if meetup.status != MeetupStatus.PLANNED:
+        raise MeetupSuggestionNotAllowedError("Meetup is not open for game suggestions.")
+
+    proposer = user_repository.get_user_by_id(db, proposer_user_id)
+    collection_owner = user_repository.get_user_by_id(db, collection_owner_user_id)
+    if proposer is None or collection_owner is None:
+        raise MeetupNotFoundError("User not found.")
+
+    if collection_owner_user_id != proposer_user_id:
+        is_meetup_collection = collection_owner_user_id == meetup.creator_user_id or any(
+            participant.user_id == collection_owner_user_id
+            and participant.status == ParticipantStatus.JOINED
+            for participant in meetup.participants
+        )
+        if not is_meetup_collection:
+            raise MeetupSuggestionNotAllowedError(
+                "The selected collection does not belong to a meetup participant."
+            )
+
+    unique_game_ids = list(dict.fromkeys(game_ids))
+    owned_game_ids = game_repository.list_owned_game_ids(
+        db,
+        user_id=collection_owner_user_id,
+        game_ids=unique_game_ids,
+    )
+    if len(owned_game_ids) != len(unique_game_ids):
+        raise MeetupSuggestionNotAllowedError(
+            "One or more selected games are not in the selected collection."
+        )
+
+    meetup_repository.replace_game_suggestions(
+        db,
+        meetup_id=meetup_id,
+        proposer_user_id=proposer_user_id,
+        collection_owner_user_id=collection_owner_user_id,
+        game_ids=unique_game_ids,
+    )
     refreshed = meetup_repository.get_meetup_by_id(db, meetup_id)
     if refreshed is None:
         raise MeetupNotFoundError("Meetup not found.")

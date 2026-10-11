@@ -21,6 +21,7 @@ from backend.app.db.models.enums import MeetupStatus, enum_values
 
 if TYPE_CHECKING:
     from backend.app.db.models.meetup_game import MeetupGame
+    from backend.app.db.models.meetup_game_suggestion import MeetupGameSuggestion
     from backend.app.db.models.meetup_participant import MeetupParticipant
     from backend.app.db.models.user import User
 
@@ -49,12 +50,16 @@ class Meetup(TimestampMixin, Base):
         nullable=False,
     )
 
-    creator: Mapped["User"] = relationship(back_populates="created_meetups")
-    meetup_games: Mapped[list["MeetupGame"]] = relationship(
+    creator: Mapped[User] = relationship(back_populates="created_meetups")
+    meetup_games: Mapped[list[MeetupGame]] = relationship(
         back_populates="meetup",
         cascade="all, delete-orphan",
     )
-    participants: Mapped[list["MeetupParticipant"]] = relationship(
+    game_suggestions: Mapped[list[MeetupGameSuggestion]] = relationship(
+        back_populates="meetup",
+        cascade="all, delete-orphan",
+    )
+    participants: Mapped[list[MeetupParticipant]] = relationship(
         back_populates="meetup",
         cascade="all, delete-orphan",
     )

@@ -1,10 +1,10 @@
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
+from backend.app.db.models.enums import GameType
 from backend.app.db.models.game import Game
 from backend.app.db.models.user import User
 from backend.app.db.models.user_game import UserGame
-from backend.app.db.models.enums import GameType
 
 
 def _apply_game_filters(
@@ -83,6 +83,16 @@ def get_game_by_id(db: Session, game_id: int) -> Game | None:
 def get_game_by_bgg_id(db: Session, bgg_id: int) -> Game | None:
     stmt = select(Game).where(Game.bgg_id == bgg_id)
     return db.scalar(stmt)
+
+
+def list_owned_game_ids(db: Session, *, user_id: int, game_ids: list[int]) -> set[int]:
+    if not game_ids:
+        return set()
+    stmt = select(UserGame.game_id).where(
+        UserGame.user_id == user_id,
+        UserGame.game_id.in_(game_ids),
+    )
+    return set(db.scalars(stmt).all())
 
 
 def list_game_owners(db: Session, game_id: int) -> list[dict]:

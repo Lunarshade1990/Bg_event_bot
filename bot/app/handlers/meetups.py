@@ -5,13 +5,15 @@ from typing import Literal, cast
 
 import httpx
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import StorageKey
 from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
     ChatMemberUpdated,
+    InlineKeyboardMarkup,
     Message,
 )
 from PIL import Image
@@ -34,8 +36,18 @@ from bot.app.keyboards.meetups import (
     MEETUP_GAME_SKIP_CALLBACK,
     MEETUP_GAME_TOGGLE_CALLBACK_PREFIX,
     MEETUP_JOIN_CALLBACK_PREFIX,
-    MEETUP_LIST_CALLBACK_PREFIX,
     MEETUP_LEAVE_CALLBACK_PREFIX,
+    MEETUP_LIST_CALLBACK_PREFIX,
+    MEETUP_SUGGEST_BACK_CALLBACK,
+    MEETUP_SUGGEST_CALLBACK_PREFIX,
+    MEETUP_SUGGEST_CANCEL_CALLBACK,
+    MEETUP_SUGGEST_DONE_CALLBACK,
+    MEETUP_SUGGEST_GROUP_CALLBACK_PREFIX,
+    MEETUP_SUGGEST_LETTER_CALLBACK_PREFIX,
+    MEETUP_SUGGEST_OWNER_CALLBACK_PREFIX,
+    MEETUP_SUGGEST_PAGE_CALLBACK_PREFIX,
+    MEETUP_SUGGEST_SOURCE_CALLBACK_PREFIX,
+    MEETUP_SUGGEST_TOGGLE_CALLBACK_PREFIX,
     get_create_meetup_comment_keyboard,
     get_create_meetup_confirm_keyboard,
     get_create_meetup_step_keyboard,
@@ -48,9 +60,15 @@ from bot.app.keyboards.meetups import (
     get_meetup_detail_keyboard,
     get_meetups_list_keyboard,
     get_meetups_menu_keyboard,
+    get_suggestion_games_keyboard,
+    get_suggestion_group_keyboard,
+    get_suggestion_letters_keyboard,
+    get_suggestion_owner_keyboard,
+    get_suggestion_source_keyboard,
 )
 from bot.app.services.backend_api import BackendAPIClient
 from bot.app.states.create_meetup import CreateMeetupStates
+from bot.app.states.propose_meetup_game import ProposeMeetupGameStates
 from bot.app.utils.game_player_counts import calculate_max_for_all_selected_games
 from bot.app.utils.meetup_datetime import (
     MEETUP_DATETIME_EXAMPLE,
@@ -773,6 +791,518 @@ async def leave_meetup(callback: CallbackQuery) -> None:
     await _render_meetup_details(callback, meetup_id)
 
 
+@router.callback_query(F.data.startswith(f"{MEETUP_SUGGEST_CALLBACK_PREFIX}:"))
+async def start_suggesting_meetup_games(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    meetup_id = _parse_meetup_id(callback.data, MEETUP_SUGGEST_CALLBACK_PREFIX)
+    message = callback.message
+    if meetup_id is None or not isinstance(message, Message):
+        await callback.answer("Не удалось открыть предложение игр.", show_alert=True)
+        return
+    if message.chat.type not in {"group", "supergroup"}:
+        await callback.answer(
+            "Предложить игру можно из сообщения встречи в группе.",
+            show_alert=True,
+        )
+        return
+
+    bot = callback.bot
+    if bot is None:
+        await callback.answer("Не удалось определить бота.", show_alert=True)
+        return
+
+    backend_client = BackendAPIClient()
+    profile = await _ensure_profile_for_user_callback(callback, backend_client=backend_client)
+    if profile is None:
+        return
+    try:
+        meetup = await backend_client.get_meetup(meetup_id)
+    except httpx.HTTPError:
+        await callback.answer("Не удалось загрузить встречу.", show_alert=True)
+        return
+
+    if (
+        meetup.get("status") != "planned"
+        or meetup.get("telegram_chat_id") != message.chat.id
+        or meetup.get("telegram_message_id") != message.message_id
+    ):
+        await callback.answer(
+            "Предложение доступно только в актуальной карточке встречи.",
+            show_alert=True,
+        )
+        return
+
+    private_state = FSMContext(
+        storage=state.storage,
+        key=StorageKey(
+            bot_id=bot.id,
+            chat_id=callback.from_user.id,
+            user_id=callback.from_user.id,
+        ),
+    )
+    try:
+        await _show_suggestion_source_prompt(
+            bot=bot,
+            chat_id=callback.from_user.id,
+            state=private_state,
+            meetup=meetup,
+            profile=profile,
+            card_has_photo=bool(message.photo),
+        )
+    except TelegramAPIError as exc:
+        await private_state.clear()
+        if not isinstance(exc, TelegramForbiddenError):
+            logger.exception(
+                "Failed to send game suggestion prompt to user %s",
+                callback.from_user.id,
+            )
+            await callback.answer("Не удалось открыть личный чат с ботом.", show_alert=True)
+            return
+
+        try:
+            bot_info = await bot.get_me()
+        except TelegramAPIError:
+            logger.exception("Failed to get bot username for suggestion deep link")
+            await callback.answer(
+                "Открой личный чат с ботом, нажми /start и повтори действие.",
+                show_alert=True,
+            )
+            return
+        if not bot_info.username:
+            await callback.answer(
+                "Открой личный чат с ботом, нажми /start и повтори действие.",
+                show_alert=True,
+            )
+            return
+        payload = f"suggest_{meetup_id}_{int(bool(message.photo))}"
+        await callback.answer(
+            "Открой личный чат с ботом и нажми «Start».",
+            url=f"https://t.me/{bot_info.username}?start={payload}",
+        )
+        return
+
+    await callback.answer("Продолжи выбор в личном чате с ботом.")
+
+
+async def start_suggestion_from_deep_link(
+    message: Message,
+    state: FSMContext,
+    *,
+    meetup_id: int,
+    card_has_photo: bool,
+) -> None:
+    user = message.from_user
+    if user is None:
+        await message.answer("Не удалось определить пользователя Telegram.")
+        return
+
+    backend_client = BackendAPIClient()
+    try:
+        profile = await backend_client.get_user_by_telegram_id(user.id)
+        meetup = await backend_client.get_meetup(meetup_id)
+    except httpx.HTTPError:
+        await message.answer("Не удалось загрузить встречу. Попробуй снова позже.")
+        return
+    if profile is None:
+        await message.answer("Сначала отправь /start, чтобы создать профиль.")
+        return
+    if meetup.get("status") != "planned" or not meetup.get("telegram_message_id"):
+        await message.answer("Эта встреча больше не принимает предложения игр.")
+        return
+
+    bot = message.bot
+    if bot is None:
+        raise RuntimeError("Cannot start game proposal without a Telegram bot context.")
+
+    try:
+        await _show_suggestion_source_prompt(
+            bot=bot,
+            chat_id=user.id,
+            state=state,
+            meetup=meetup,
+            profile=profile,
+            card_has_photo=card_has_photo,
+        )
+    except TelegramAPIError:
+        logger.exception("Failed to show game suggestion prompt in private chat")
+        await message.answer(
+            "Не удалось открыть выбор игр. Попробуй нажать кнопку встречи ещё раз."
+        )
+
+
+async def _show_suggestion_source_prompt(
+    *,
+    bot: Bot,
+    chat_id: int,
+    state: FSMContext,
+    meetup: dict,
+    profile: dict,
+    card_has_photo: bool,
+) -> None:
+    if meetup.get("status") != "planned":
+        raise ValueError("Meetup is not accepting suggestions.")
+
+    await state.clear()
+    await state.update_data(
+        meetup_id=meetup["id"],
+        proposer_user_id=profile["id"],
+        proposer_telegram_id=profile["telegram_id"],
+        card_has_photo=card_has_photo,
+    )
+    await state.set_state(ProposeMeetupGameStates.choosing_source)
+    await bot.send_message(
+        chat_id=chat_id,
+        text="Из какой коллекции выбрать игры?",
+        reply_markup=get_suggestion_source_keyboard(),
+    )
+
+
+@router.callback_query(F.data.startswith(f"{MEETUP_SUGGEST_SOURCE_CALLBACK_PREFIX}:"))
+async def select_suggestion_source(callback: CallbackQuery, state: FSMContext) -> None:
+    source = (callback.data or "").split(":", 1)[-1]
+    data = await state.get_data()
+    if not data.get("meetup_id") or not data.get("proposer_user_id"):
+        await callback.answer(
+            "Сценарий предложения завершился. Нажми кнопку встречи ещё раз.",
+            show_alert=True,
+        )
+        return
+
+    if source == "mine":
+        await _load_suggestion_collection(
+            callback,
+            state,
+            collection_owner_user_id=data["proposer_user_id"],
+        )
+        return
+    if source != "participant":
+        await callback.answer("Некорректный источник коллекции.", show_alert=True)
+        return
+
+    backend_client = BackendAPIClient()
+    try:
+        meetup = await backend_client.get_meetup(data["meetup_id"])
+    except httpx.HTTPError:
+        await callback.answer("Не удалось загрузить участников встречи.", show_alert=True)
+        return
+    proposer_user_id = data["proposer_user_id"]
+    sources = [
+        source
+        for source in meetup.get("proposal_sources", [])
+        if source.get("user_id") != proposer_user_id
+    ]
+    if not sources:
+        await callback.answer("У других участников пока нет доступных коллекций.", show_alert=True)
+        return
+
+    await state.set_state(ProposeMeetupGameStates.choosing_collection_owner)
+    await _edit_suggestion_prompt(
+        callback,
+        "Выбери участника. Автор встречи указан первым:",
+        get_suggestion_owner_keyboard(sources),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(f"{MEETUP_SUGGEST_OWNER_CALLBACK_PREFIX}:"))
+async def select_suggestion_collection_owner(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    raw_user_id = (callback.data or "").split(":", 1)[-1]
+    if not raw_user_id.isdigit():
+        await callback.answer("Некорректный участник.", show_alert=True)
+        return
+    await _load_suggestion_collection(
+        callback,
+        state,
+        collection_owner_user_id=int(raw_user_id),
+    )
+
+
+async def _load_suggestion_collection(
+    callback: CallbackQuery,
+    state: FSMContext,
+    *,
+    collection_owner_user_id: int,
+) -> None:
+    backend_client = BackendAPIClient()
+    games: list[dict] = []
+    offset = 0
+    page_size = 100
+    try:
+        while True:
+            batch = await backend_client.list_games(
+                owner_id=collection_owner_user_id,
+                game_type="base",
+                limit=page_size,
+                offset=offset,
+            )
+            games.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+    except httpx.HTTPError:
+        await callback.answer("Не удалось загрузить коллекцию участника.", show_alert=True)
+        return
+
+    letters_map: dict[str, list[dict]] = {}
+    for game in games:
+        title = (game.get("title") or "").strip()
+        if title and title[0].isalpha():
+            letters_map.setdefault(title[0].upper(), []).append(game)
+    letters = sorted(letters_map)
+    if not letters:
+        await callback.answer("В этой коллекции пока нет игр для выбора.", show_alert=True)
+        return
+
+    letter_groups = [letters[index : index + 6] for index in range(0, len(letters), 6)]
+    await state.update_data(
+        collection_owner_user_id=collection_owner_user_id,
+        proposal_letters_map=letters_map,
+        proposal_letter_groups=letter_groups if len(letters) > 5 else None,
+        selected_game_ids=[],
+        selected_games=[],
+    )
+    if len(letters) <= 5:
+        await state.set_state(ProposeMeetupGameStates.choosing_game_letter)
+        await _edit_suggestion_prompt(
+            callback,
+            "Выбери первую букву:",
+            get_suggestion_letters_keyboard(letters),
+        )
+    else:
+        await state.set_state(ProposeMeetupGameStates.choosing_game_group)
+        await _edit_suggestion_prompt(
+            callback,
+            "Выбери диапазон букв:",
+            get_suggestion_group_keyboard(letter_groups),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(f"{MEETUP_SUGGEST_GROUP_CALLBACK_PREFIX}:"))
+async def select_suggestion_game_group(callback: CallbackQuery, state: FSMContext) -> None:
+    raw_index = (callback.data or "").split(":", 1)[-1]
+    data = await state.get_data()
+    groups = data.get("proposal_letter_groups") or []
+    if not raw_index.isdigit() or int(raw_index) >= len(groups):
+        await callback.answer("Некорректный диапазон букв.", show_alert=True)
+        return
+    await state.update_data(current_proposal_group=int(raw_index))
+    await state.set_state(ProposeMeetupGameStates.choosing_game_letter)
+    await _edit_suggestion_prompt(
+        callback,
+        "Выбери первую букву:",
+        get_suggestion_letters_keyboard(groups[int(raw_index)]),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(f"{MEETUP_SUGGEST_LETTER_CALLBACK_PREFIX}:"))
+async def select_suggestion_game_letter(callback: CallbackQuery, state: FSMContext) -> None:
+    letter = (callback.data or "").split(":", 1)[-1]
+    data = await state.get_data()
+    games = (data.get("proposal_letters_map") or {}).get(letter)
+    if not games:
+        await callback.answer("Для этой буквы игр нет.", show_alert=True)
+        return
+    await state.update_data(current_proposal_letter=letter, current_proposal_page=0)
+    await _show_suggestion_game_page(callback, state, page=0)
+
+
+@router.callback_query(F.data.startswith(f"{MEETUP_SUGGEST_PAGE_CALLBACK_PREFIX}:"))
+async def change_suggestion_game_page(callback: CallbackQuery, state: FSMContext) -> None:
+    raw_page = (callback.data or "").split(":", 1)[-1]
+    if not raw_page.isdigit():
+        await callback.answer("Некорректный номер страницы.", show_alert=True)
+        return
+    await _show_suggestion_game_page(callback, state, page=int(raw_page))
+
+
+async def _show_suggestion_game_page(
+    callback: CallbackQuery,
+    state: FSMContext,
+    *,
+    page: int,
+) -> None:
+    data = await state.get_data()
+    letter = data.get("current_proposal_letter")
+    games = (data.get("proposal_letters_map") or {}).get(letter) or []
+    page_size = 8
+    start = page * page_size
+    if not letter or page < 0 or start >= len(games):
+        await callback.answer("Страница больше недоступна.", show_alert=True)
+        return
+    page_games = games[start : start + page_size]
+    selected_ids = set(data.get("selected_game_ids") or [])
+    await state.update_data(
+        current_proposal_page=page,
+        available_proposal_games={
+            str(game["id"]): game
+            for game in page_games
+            if game.get("id") is not None
+        },
+    )
+    await state.set_state(ProposeMeetupGameStates.choosing_games)
+    await _edit_suggestion_prompt(
+        callback,
+        f"Игры на букву {letter} (страница {page + 1}):",
+        get_suggestion_games_keyboard(
+            page_games,
+            selected_ids,
+            page,
+            start + page_size < len(games),
+        ),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(f"{MEETUP_SUGGEST_TOGGLE_CALLBACK_PREFIX}:"))
+async def toggle_suggestion_game(callback: CallbackQuery, state: FSMContext) -> None:
+    raw_game_id = (callback.data or "").split(":", 1)[-1]
+    if not raw_game_id.isdigit():
+        await callback.answer("Некорректная игра.", show_alert=True)
+        return
+    game_id = int(raw_game_id)
+    data = await state.get_data()
+    available = data.get("available_proposal_games") or {}
+    selected_games = list(data.get("selected_games") or [])
+    selected_ids = set(data.get("selected_game_ids") or [])
+    if str(game_id) not in available:
+        await callback.answer("Эта игра больше не доступна на странице.", show_alert=True)
+        return
+    if game_id in selected_ids:
+        selected_ids.remove(game_id)
+        selected_games = [game for game in selected_games if game.get("id") != game_id]
+    else:
+        selected_ids.add(game_id)
+        selected_games.append(available[str(game_id)])
+    await state.update_data(
+        selected_game_ids=list(selected_ids),
+        selected_games=selected_games,
+    )
+    await _show_suggestion_game_page(
+        callback,
+        state,
+        page=data.get("current_proposal_page") or 0,
+    )
+
+
+@router.callback_query(F.data == MEETUP_SUGGEST_DONE_CALLBACK)
+async def finish_suggesting_meetup_games(callback: CallbackQuery, state: FSMContext) -> None:
+    bot = callback.bot
+    if bot is None:
+        await callback.answer("Не удалось определить бота.", show_alert=True)
+        return
+    data = await state.get_data()
+    game_ids = data.get("selected_game_ids") or []
+    meetup_id = data.get("meetup_id")
+    proposer_user_id = data.get("proposer_user_id")
+    collection_owner_user_id = data.get("collection_owner_user_id")
+    if not game_ids or not meetup_id or not proposer_user_id or not collection_owner_user_id:
+        await callback.answer("Выбери хотя бы одну игру.", show_alert=True)
+        return
+
+    backend_client = BackendAPIClient()
+    try:
+        meetup = await backend_client.suggest_meetup_games(
+            meetup_id,
+            proposer_user_id=proposer_user_id,
+            collection_owner_user_id=collection_owner_user_id,
+            game_ids=game_ids,
+        )
+    except httpx.HTTPStatusError as exc:
+        await callback.answer(_extract_error_detail(exc), show_alert=True)
+        return
+    except httpx.HTTPError:
+        await callback.answer("Не удалось сохранить предложение.", show_alert=True)
+        return
+
+    await state.clear()
+    try:
+        await _refresh_group_meetup_card(
+            bot,
+            meetup,
+            telegram_id=data["proposer_telegram_id"],
+            has_photo=data.get("card_has_photo", False),
+        )
+    except TelegramAPIError:
+        logger.exception(
+            "Saved suggestion for meetup %s but failed to refresh its Telegram card",
+            meetup_id,
+        )
+        message = callback.message
+        if isinstance(message, Message):
+            await message.edit_text(
+                "Предложение сохранено, но карточку встречи не удалось обновить."
+            )
+        await callback.answer(
+            "Предложение сохранено, но карточка встречи не обновилась.",
+            show_alert=True,
+        )
+        return
+
+    message = callback.message
+    if isinstance(message, Message):
+        await message.edit_text("Предложение добавлено к встрече.", reply_markup=None)
+    await callback.answer("Предложение добавлено.")
+
+
+@router.callback_query(F.data == MEETUP_SUGGEST_BACK_CALLBACK)
+async def go_back_in_suggestion_flow(callback: CallbackQuery, state: FSMContext) -> None:
+    current_state = await state.get_state()
+    data = await state.get_data()
+    if current_state == ProposeMeetupGameStates.choosing_games.state:
+        letter = data.get("current_proposal_letter")
+        groups = data.get("proposal_letter_groups")
+        if groups:
+            letters = groups[data.get("current_proposal_group", 0)]
+        else:
+            letters = sorted((data.get("proposal_letters_map") or {}).keys())
+        await state.set_state(ProposeMeetupGameStates.choosing_game_letter)
+        await _edit_suggestion_prompt(
+            callback,
+            f"Игры на букву {letter}. Выбери другую букву:",
+            get_suggestion_letters_keyboard(letters),
+        )
+    elif current_state == ProposeMeetupGameStates.choosing_game_letter.state:
+        groups = data.get("proposal_letter_groups")
+        if groups:
+            await state.set_state(ProposeMeetupGameStates.choosing_game_group)
+            await _edit_suggestion_prompt(
+                callback,
+                "Выбери диапазон букв:",
+                get_suggestion_group_keyboard(groups),
+            )
+        else:
+            await state.set_state(ProposeMeetupGameStates.choosing_source)
+            await _edit_suggestion_prompt(
+                callback,
+                "Из какой коллекции выбрать игры?",
+                get_suggestion_source_keyboard(),
+            )
+    else:
+        await state.set_state(ProposeMeetupGameStates.choosing_source)
+        await _edit_suggestion_prompt(
+            callback,
+            "Из какой коллекции выбрать игры?",
+            get_suggestion_source_keyboard(),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data == MEETUP_SUGGEST_CANCEL_CALLBACK)
+async def cancel_suggesting_meetup_games(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    message = callback.message
+    if isinstance(message, Message):
+        await message.edit_text("Предложение отменено.", reply_markup=None)
+    await callback.answer("Предложение отменено.")
+
+
 @router.callback_query(F.data.startswith(f"{MEETUP_DELETE_CALLBACK_PREFIX}:"))
 async def confirm_delete_meetup(callback: CallbackQuery) -> None:
     meetup_id = _parse_meetup_id(callback.data, MEETUP_DELETE_CALLBACK_PREFIX)
@@ -972,6 +1502,53 @@ def _build_group_keyboard_for_user(meetup: dict, *, telegram_id: int):
     return get_group_meetup_keyboard(meetup_id=meetup["id"], is_joined=is_joined)
 
 
+async def _edit_suggestion_prompt(
+    callback: CallbackQuery,
+    text: str,
+    reply_markup: InlineKeyboardMarkup,
+) -> None:
+    message = callback.message
+    if not isinstance(message, Message):
+        await callback.answer("Не удалось обновить выбор.", show_alert=True)
+        return
+    await message.edit_text(text, reply_markup=reply_markup)
+
+
+async def _refresh_group_meetup_card(
+    bot: Bot,
+    meetup: dict,
+    *,
+    telegram_id: int,
+    has_photo: bool,
+) -> None:
+    chat_id = meetup.get("telegram_chat_id")
+    message_id = meetup.get("telegram_message_id")
+    if chat_id is None or message_id is None:
+        raise ValueError(f"Meetup {meetup.get('id')} has no Telegram message to refresh.")
+
+    text = _format_group_meetup_card(
+        meetup,
+        selected_games=meetup.get("games") or None,
+    )
+    keyboard = _build_group_keyboard_for_user(meetup, telegram_id=telegram_id)
+    if has_photo:
+        await bot.edit_message_caption(
+            chat_id=chat_id,
+            message_id=message_id,
+            caption=text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+    else:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+
+
 def _format_group_meetup_card(meetup: dict, selected_games: list[dict] | None = None) -> str:
     games = selected_games if selected_games is not None else meetup.get("games") or []
     date_label = escape(format_meetup_datetime(meetup["scheduled_at"]))
@@ -1007,6 +1584,9 @@ def _format_group_meetup_card(meetup: dict, selected_games: list[dict] | None = 
         for game in games:
             title = escape(str(game.get("title") or "Игры"))
             lines.append(f"- {title}")
+    proposal_lines = _format_game_suggestion_lines(meetup.get("game_suggestions") or [])
+    if proposal_lines:
+        lines.extend(["", "Предложения игроков:", *proposal_lines])
     lines.extend(["", "<b>Участники:</b>", *participant_lines])
     return "\n".join(lines)
 
@@ -1729,8 +2309,29 @@ def _format_meetup_details(meetup: dict, selected_games: list[dict] | None = Non
         for game in games:
             title = escape(str(game.get("title") or "Игры"))
             lines.append(f"- {title}")
+    proposal_lines = _format_game_suggestion_lines(meetup.get("game_suggestions") or [])
+    if proposal_lines:
+        lines.extend(["", "Предложения игроков:", *proposal_lines])
     lines.extend(["", "Участники:", *participant_lines])
     return "\n".join(lines)
+
+
+def _format_game_suggestion_lines(suggestions: list[dict]) -> list[str]:
+    lines: list[str] = []
+    for suggestion in suggestions:
+        username = suggestion.get("username")
+        proposer = (
+            f"@{escape(username)}"
+            if username
+            else escape(suggestion.get("display_name") or "Участник")
+        )
+        game_titles = [
+            escape(str(game.get("title") or "Игра"))
+            for game in suggestion.get("games", [])
+        ]
+        if game_titles:
+            lines.append(f"{proposer} предлагает игры: {', '.join(game_titles)}")
+    return lines
 
 
 def _format_meetup_heading(meetup: dict, selected_games: list[dict] | None = None) -> str:

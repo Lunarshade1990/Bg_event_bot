@@ -1,22 +1,27 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
-from bot.app.keyboards.meetups import (
-    get_meetups_list_keyboard,
-    get_meetups_menu_keyboard,
-)
 from bot.app.handlers.meetups import (
     _format_actor_display_name,
     _format_create_meetup_confirmation,
     _format_creator_participation_notification,
+    _format_game_suggestion_lines,
     _format_group_meetup_card,
     _format_meetup_details,
     _get_creation_message_ids,
     _parse_chat_id,
+    _show_suggestion_source_prompt,
     _start_private_chat_meetup_creation,
     receive_meetup_date,
     skip_game_selection,
+)
+from bot.app.keyboards.meetups import (
+    get_group_meetup_keyboard,
+    get_meetups_list_keyboard,
+    get_meetups_menu_keyboard,
+    get_suggestion_owner_keyboard,
 )
 
 
@@ -45,6 +50,59 @@ def test_meetups_list_keyboard_switches_category_and_preserves_item_context() ->
     assert upcoming_keyboard.inline_keyboard[0][0].callback_data == "meetup:42:upcoming"
     assert upcoming_keyboard.inline_keyboard[-1][0].callback_data == "meetup_list:archive"
     assert archive_keyboard.inline_keyboard[-1][0].callback_data == "meetup_list:upcoming"
+
+
+def test_group_meetup_keyboard_includes_game_suggestion_action() -> None:
+    keyboard = get_group_meetup_keyboard(meetup_id=42, is_joined=False)
+
+    assert keyboard.inline_keyboard[-1][0].text == "🎲 Предложить игру"
+    assert keyboard.inline_keyboard[-1][0].callback_data == "meetup_suggest:42"
+
+
+def test_suggestion_source_keyboard_keeps_meetup_creator_first() -> None:
+    keyboard = get_suggestion_owner_keyboard(
+        [
+            {"user_id": 1, "username": "creator", "display_name": "Creator"},
+            {"user_id": 2, "username": "player", "display_name": "Player"},
+        ]
+    )
+
+    assert keyboard.inline_keyboard[0][0].text == "@creator"
+    assert keyboard.inline_keyboard[1][0].text == "@player"
+
+
+@pytest.mark.asyncio
+async def test_suggestion_prompt_is_sent_to_user_private_chat() -> None:
+    bot = SimpleNamespace(send_message=AsyncMock())
+    state = DummyState()
+
+    await _show_suggestion_source_prompt(
+        bot=bot,
+        chat_id=12345,
+        state=state,
+        meetup={"id": 42, "status": "planned"},
+        profile={"id": 9, "telegram_id": 12345},
+        card_has_photo=True,
+    )
+
+    bot.send_message.assert_awaited_once()
+    assert bot.send_message.await_args.kwargs["chat_id"] == 12345
+    assert state.data["meetup_id"] == 42
+    assert state.data["card_has_photo"] is True
+
+
+def test_game_suggestion_lines_include_user_and_escape_game_titles() -> None:
+    lines = _format_game_suggestion_lines(
+        [
+            {
+                "username": "player",
+                "display_name": "Player",
+                "games": [{"title": "Catan <Deluxe>"}, {"title": "Azul"}],
+            }
+        ]
+    )
+
+    assert lines == ["@player предлагает игры: Catan &lt;Deluxe&gt;, Azul"]
 
 
 def test_format_meetup_details_escapes_user_content() -> None:
@@ -171,6 +229,48 @@ def test_format_group_meetup_card_includes_selected_games() -> None:
     assert "- Catan" in text
     assert "- Azul" in text
     assert text.startswith("<b>Catan в понедельник в 19:30</b>"), text
+
+
+def test_format_group_meetup_card_keeps_game_suggestions() -> None:
+    text = _format_group_meetup_card(
+        {
+            "id": 1,
+            "scheduled_at": "2026-06-15T19:30:00+00:00",
+            "capacity_total": 4,
+            "comment": None,
+            "participants": [],
+            "game_suggestions": [
+                {
+                    "username": "player",
+                    "display_name": "Player",
+                    "games": [{"title": "Catan"}, {"title": "Azul"}],
+                }
+            ],
+        }
+    )
+
+    assert "@player предлагает игры: Catan, Azul" in text
+
+
+def test_format_meetup_details_keeps_game_suggestions() -> None:
+    text = _format_meetup_details(
+        {
+            "id": 1,
+            "scheduled_at": "2026-06-15T19:30:00+00:00",
+            "capacity_total": 4,
+            "comment": None,
+            "participants": [],
+            "game_suggestions": [
+                {
+                    "username": "player",
+                    "display_name": "Player",
+                    "games": [{"title": "Catan"}, {"title": "Azul"}],
+                }
+            ],
+        }
+    )
+
+    assert "@player предлагает игры: Catan, Azul" in text
 
 
 def test_format_meetup_details_includes_selected_games() -> None:

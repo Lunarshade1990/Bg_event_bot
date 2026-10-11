@@ -2,8 +2,15 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
-from backend.app.db.models.enums import CampaignSource, GameType, MeetupStatus
+from backend.app.db.models.enums import (
+    CampaignSource,
+    GameType,
+    MeetupStatus,
+    OwnershipSource,
+)
 from backend.app.db.models.game import Game
+from backend.app.db.models.user_game import UserGame
+from backend.app.services import meetups as meetup_service
 from tests.fixtures.meetups import make_meetup, make_user
 
 
@@ -75,6 +82,169 @@ def test_create_meetup_persists_game_ids_in_response(
     assert len(payload["games"]) == 1
     assert payload["games"][0]["id"] == game.id
     assert payload["games"][0]["title"] == "Catan"
+
+
+def test_meetup_proposal_sources_put_creator_first_and_include_joined_collectors(
+    client: TestClient,
+    db_session,
+    api_headers: dict[str, str],
+) -> None:
+    creator = make_user(db_session, telegram_id=20090, display_name="Creator")
+    creator.bgg_username = "creator_bgg"
+    participant = make_user(db_session, telegram_id=20091, display_name="Participant")
+    participant.bgg_username = "participant_bgg"
+    outsider = make_user(db_session, telegram_id=20092, display_name="Outsider")
+    outsider.bgg_username = "outsider_bgg"
+
+    games = [
+        Game(
+            bgg_id=20090 + index,
+            title=f"Game {index}",
+            min_players=1,
+            max_players=4,
+            game_type=GameType.BASE,
+            campaign_source=CampaignSource.UNKNOWN,
+        )
+        for index in range(3)
+    ]
+    db_session.add_all(games)
+    db_session.flush()
+    for user, game in zip((creator, participant, outsider), games, strict=True):
+        db_session.add(
+            UserGame(
+                user_id=user.id,
+                game_id=game.id,
+                source=OwnershipSource.BGG_IMPORT,
+            )
+        )
+    db_session.commit()
+
+    meetup = make_meetup(db_session, creator)
+    meetup_service.join_meetup(db_session, meetup.id, participant.id)
+
+    response = client.get(f"/api/meetups/{meetup.id}", headers=api_headers)
+
+    assert response.status_code == 200
+    sources = response.json()["proposal_sources"]
+    assert [source["user_id"] for source in sources] == [creator.id, participant.id]
+
+
+def test_meetup_suggestion_replaces_previous_games_for_proposer(
+    client: TestClient,
+    db_session,
+    api_headers: dict[str, str],
+) -> None:
+    creator = make_user(db_session, telegram_id=20100, display_name="Creator")
+    creator.bgg_username = "creator_bgg"
+    proposer = make_user(db_session, telegram_id=20101, display_name="Proposer", username="player")
+    proposer.bgg_username = "proposer_bgg"
+    games = [
+        Game(
+            bgg_id=20100 + index,
+            title=f"Game {index}",
+            min_players=1,
+            max_players=4,
+            game_type=GameType.BASE,
+            campaign_source=CampaignSource.UNKNOWN,
+        )
+        for index in range(3)
+    ]
+    db_session.add_all(games)
+    db_session.flush()
+    db_session.add_all(
+        [
+            UserGame(
+                user_id=creator.id,
+                game_id=games[0].id,
+                source=OwnershipSource.BGG_IMPORT,
+            ),
+            UserGame(
+                user_id=creator.id,
+                game_id=games[1].id,
+                source=OwnershipSource.BGG_IMPORT,
+            ),
+            UserGame(
+                user_id=proposer.id,
+                game_id=games[2].id,
+                source=OwnershipSource.BGG_IMPORT,
+            ),
+        ]
+    )
+    db_session.commit()
+    meetup = make_meetup(db_session, creator)
+
+    first_response = client.post(
+        f"/api/meetups/{meetup.id}/suggestions",
+        headers=api_headers,
+        json={
+            "proposer_user_id": proposer.id,
+            "collection_owner_user_id": creator.id,
+            "game_ids": [games[0].id, games[1].id],
+        },
+    )
+    assert first_response.status_code == 200
+    assert len(first_response.json()["game_suggestions"][0]["games"]) == 2
+
+    replacement_response = client.post(
+        f"/api/meetups/{meetup.id}/suggestions",
+        headers=api_headers,
+        json={
+            "proposer_user_id": proposer.id,
+            "collection_owner_user_id": proposer.id,
+            "game_ids": [games[2].id],
+        },
+    )
+
+    assert replacement_response.status_code == 200
+    suggestions = replacement_response.json()["game_suggestions"]
+    assert len(suggestions) == 1
+    assert suggestions[0]["proposer_user_id"] == proposer.id
+    assert suggestions[0]["username"] == "player"
+    assert [game["id"] for game in suggestions[0]["games"]] == [games[2].id]
+
+
+def test_meetup_suggestion_rejects_games_outside_selected_collection(
+    client: TestClient,
+    db_session,
+    api_headers: dict[str, str],
+) -> None:
+    creator = make_user(db_session, telegram_id=20110, display_name="Creator")
+    creator.bgg_username = "creator_bgg"
+    proposer = make_user(db_session, telegram_id=20111, display_name="Proposer")
+    game = Game(
+        bgg_id=20110,
+        title="Not owned by creator",
+        min_players=1,
+        max_players=4,
+        game_type=GameType.BASE,
+        campaign_source=CampaignSource.UNKNOWN,
+    )
+    db_session.add(game)
+    db_session.flush()
+    db_session.add(
+        UserGame(
+            user_id=proposer.id,
+            game_id=game.id,
+            source=OwnershipSource.BGG_IMPORT,
+        )
+    )
+    db_session.commit()
+    meetup = make_meetup(db_session, creator)
+
+    response = client.post(
+        f"/api/meetups/{meetup.id}/suggestions",
+        headers=api_headers,
+        json={
+            "proposer_user_id": proposer.id,
+            "collection_owner_user_id": creator.id,
+            "game_ids": [game.id],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "One or more selected games are not in the selected collection."
+    )
 
 
 def test_create_meetup_with_telegram_thread_data(

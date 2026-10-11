@@ -5,6 +5,7 @@ from backend.app.dependencies.db import get_db
 from backend.app.schemas.meetup import (
     MeetupCreateRequest,
     MeetupDeleteRequest,
+    MeetupGameSuggestionRequest,
     MeetupJoinRequest,
     MeetupLeaveRequest,
     MeetupRead,
@@ -131,6 +132,26 @@ def leave_meetup(
         return meetup_service.leave_meetup(db, meetup_id, payload.user_id)
     except meetup_service.MeetupNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.post("/{meetup_id}/suggestions", response_model=MeetupRead)
+def suggest_games(
+    meetup_id: int,
+    payload: MeetupGameSuggestionRequest,
+    db: Session = Depends(get_db),
+) -> MeetupRead:
+    try:
+        return meetup_service.suggest_meetup_games(
+            db,
+            meetup_id=meetup_id,
+            proposer_user_id=payload.proposer_user_id,
+            collection_owner_user_id=payload.collection_owner_user_id,
+            game_ids=payload.game_ids,
+        )
+    except meetup_service.MeetupNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except meetup_service.MeetupSuggestionNotAllowedError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.post("/{meetup_id}/telegram-message", response_model=MeetupRead)

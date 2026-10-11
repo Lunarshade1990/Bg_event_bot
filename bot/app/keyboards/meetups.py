@@ -14,6 +14,16 @@ MEETUP_CALLBACK_PREFIX = "meetup"
 MEETUP_LIST_CALLBACK_PREFIX = "meetup_list"
 MEETUP_JOIN_CALLBACK_PREFIX = "meetup_join"
 MEETUP_LEAVE_CALLBACK_PREFIX = "meetup_leave"
+MEETUP_SUGGEST_CALLBACK_PREFIX = "meetup_suggest"
+MEETUP_SUGGEST_SOURCE_CALLBACK_PREFIX = "meetup_suggest_source"
+MEETUP_SUGGEST_OWNER_CALLBACK_PREFIX = "meetup_suggest_owner"
+MEETUP_SUGGEST_GROUP_CALLBACK_PREFIX = "meetup_suggest_group"
+MEETUP_SUGGEST_LETTER_CALLBACK_PREFIX = "meetup_suggest_letter"
+MEETUP_SUGGEST_PAGE_CALLBACK_PREFIX = "meetup_suggest_page"
+MEETUP_SUGGEST_TOGGLE_CALLBACK_PREFIX = "meetup_suggest_toggle"
+MEETUP_SUGGEST_DONE_CALLBACK = "meetup_suggest_done"
+MEETUP_SUGGEST_BACK_CALLBACK = "meetup_suggest_back"
+MEETUP_SUGGEST_CANCEL_CALLBACK = "meetup_suggest_cancel"
 MEETUP_DELETE_CALLBACK_PREFIX = "meetup_delete"
 MEETUP_DELETE_CONFIRM_CALLBACK_PREFIX = "meetup_delete_confirm"
 MEETUP_CREATE_CONFIRM_CALLBACK = "meetup_create:confirm"
@@ -127,9 +137,134 @@ def get_group_meetup_keyboard(
                     text="❌ Не пойду",
                     callback_data=f"{MEETUP_LEAVE_CALLBACK_PREFIX}:{meetup_id}",
                 ),
-            ]
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎲 Предложить игру",
+                    callback_data=f"{MEETUP_SUGGEST_CALLBACK_PREFIX}:{meetup_id}",
+                )
+            ],
         ]
     )
+
+
+def get_suggestion_source_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Из моей коллекции",
+                    callback_data=f"{MEETUP_SUGGEST_SOURCE_CALLBACK_PREFIX}:mine",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Из коллекции участника",
+                    callback_data=f"{MEETUP_SUGGEST_SOURCE_CALLBACK_PREFIX}:participant",
+                )
+            ],
+            [_get_suggestion_cancel_button()],
+        ]
+    )
+
+
+def get_suggestion_owner_keyboard(
+    proposal_sources: list[dict],
+) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=_format_proposal_source_label(source),
+                callback_data=f"{MEETUP_SUGGEST_OWNER_CALLBACK_PREFIX}:{source['user_id']}",
+            )
+        ]
+        for source in proposal_sources
+    ]
+    rows.append([_get_suggestion_back_button(), _get_suggestion_cancel_button()])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_suggestion_group_keyboard(groups: list[list[str]]) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{group[0]}-{group[-1]}" if len(group) > 1 else group[0],
+                callback_data=f"{MEETUP_SUGGEST_GROUP_CALLBACK_PREFIX}:{index}",
+            )
+        ]
+        for index, group in enumerate(groups)
+    ]
+    rows.append([_get_suggestion_back_button(), _get_suggestion_cancel_button()])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_suggestion_letters_keyboard(letters: list[str]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for index, letter in enumerate(letters):
+        row.append(
+            InlineKeyboardButton(
+                text=letter,
+                callback_data=f"{MEETUP_SUGGEST_LETTER_CALLBACK_PREFIX}:{letter}",
+            )
+        )
+        if (index + 1) % 3 == 0:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([_get_suggestion_back_button(), _get_suggestion_cancel_button()])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_suggestion_games_keyboard(
+    games: list[dict],
+    selected_ids: set[int],
+    page: int,
+    has_more: bool,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for game in games:
+        game_id = game.get("id")
+        title = game.get("title") or str(game_id)
+        prefix = "✅ " if game_id in selected_ids else ""
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{prefix}{title}",
+                    callback_data=f"{MEETUP_SUGGEST_TOGGLE_CALLBACK_PREFIX}:{game_id}",
+                )
+            ]
+        )
+
+    nav_row: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav_row.append(
+            InlineKeyboardButton(
+                text="<- Назад",
+                callback_data=f"{MEETUP_SUGGEST_PAGE_CALLBACK_PREFIX}:{page - 1}",
+            )
+        )
+    if has_more:
+        nav_row.append(
+            InlineKeyboardButton(
+                text="Вперед ->",
+                callback_data=f"{MEETUP_SUGGEST_PAGE_CALLBACK_PREFIX}:{page + 1}",
+            )
+        )
+    if nav_row:
+        rows.append(nav_row)
+    if selected_ids:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="✅ Готово",
+                    callback_data=MEETUP_SUGGEST_DONE_CALLBACK,
+                )
+            ]
+        )
+    rows.append([_get_suggestion_back_button(), _get_suggestion_cancel_button()])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_create_meetup_step_keyboard(*, can_go_back: bool) -> InlineKeyboardMarkup:
@@ -307,6 +442,20 @@ def _format_meetup_button_label(meetup: dict) -> str:
     joined_count = len(meetup.get("participants", []))
     capacity = meetup["capacity_total"]
     return f"{date_label} ({joined_count}/{capacity})"
+
+
+def _format_proposal_source_label(source: dict) -> str:
+    username = source.get("username")
+    label = f"@{username}" if username else source.get("display_name") or "Участник"
+    return label[:60]
+
+
+def _get_suggestion_back_button() -> InlineKeyboardButton:
+    return InlineKeyboardButton(text="↩️ Назад", callback_data=MEETUP_SUGGEST_BACK_CALLBACK)
+
+
+def _get_suggestion_cancel_button() -> InlineKeyboardButton:
+    return InlineKeyboardButton(text="Отмена", callback_data=MEETUP_SUGGEST_CANCEL_CALLBACK)
 
 
 class ButtonTypes(Enum):

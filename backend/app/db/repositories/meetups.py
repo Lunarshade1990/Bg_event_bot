@@ -3,16 +3,26 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from backend.app.db.models.enums import ParticipantStatus
+from backend.app.db.models.enums import MeetupStatus, ParticipantStatus
 from backend.app.db.models.meetup import Meetup
 from backend.app.db.models.meetup_game import MeetupGame
+from backend.app.db.models.meetup_game_suggestion import MeetupGameSuggestion
 from backend.app.db.models.meetup_participant import MeetupParticipant
+from backend.app.db.models.user import User
+from backend.app.db.models.user_game import UserGame
 
 
 def _meetup_load_options():
     return (
         selectinload(Meetup.participants).selectinload(MeetupParticipant.user),
+        selectinload(Meetup.creator).selectinload(User.user_games).selectinload(UserGame.game),
+        selectinload(Meetup.participants)
+        .selectinload(MeetupParticipant.user)
+        .selectinload(User.user_games)
+        .selectinload(UserGame.game),
         selectinload(Meetup.meetup_games).selectinload(MeetupGame.game),
+        selectinload(Meetup.game_suggestions).selectinload(MeetupGameSuggestion.proposer),
+        selectinload(Meetup.game_suggestions).selectinload(MeetupGameSuggestion.game),
     )
 
 
@@ -172,6 +182,30 @@ def set_meetup_telegram_message_id(
     db.commit()
     db.refresh(meetup)
     return meetup
+
+
+def replace_game_suggestions(
+    db: Session,
+    *,
+    meetup_id: int,
+    proposer_user_id: int,
+    collection_owner_user_id: int,
+    game_ids: list[int],
+) -> None:
+    db.query(MeetupGameSuggestion).filter(
+        MeetupGameSuggestion.meetup_id == meetup_id,
+        MeetupGameSuggestion.proposer_user_id == proposer_user_id,
+    ).delete(synchronize_session=False)
+    db.add_all(
+        MeetupGameSuggestion(
+            meetup_id=meetup_id,
+            proposer_user_id=proposer_user_id,
+            collection_owner_user_id=collection_owner_user_id,
+            game_id=game_id,
+        )
+        for game_id in game_ids
+    )
+    db.commit()
 
 
 def delete_meetup(db: Session, meetup: Meetup) -> None:

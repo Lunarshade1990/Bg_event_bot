@@ -2,6 +2,7 @@ from backend.app.db.models.bgg_import_job import BggImportJob
 from backend.app.db.models.game import Game
 from backend.app.db.models.meetup import Meetup
 from backend.app.db.models.meetup_game import MeetupGame
+from backend.app.db.models.meetup_game_suggestion import MeetupGameSuggestion
 from backend.app.db.models.meetup_participant import MeetupParticipant
 from backend.app.db.models.telegram_chat_member import TelegramChatMember
 from backend.app.db.models.telegram_chat_topic import TelegramChatTopic
@@ -13,6 +14,7 @@ __all__ = [
     "Game",
     "Meetup",
     "MeetupGame",
+    "MeetupGameSuggestion",
     "MeetupParticipant",
     "TelegramChatMember",
     "TelegramChatTopic",

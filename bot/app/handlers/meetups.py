@@ -1197,7 +1197,7 @@ async def finish_suggesting_meetup_games(callback: CallbackQuery, state: FSMCont
     if bot is None:
         await callback.answer("Не удалось определить бота.", show_alert=True)
         return
-    data = await state.get_data()
+    data = dict(await state.get_data())
     game_ids = data.get("selected_game_ids") or []
     meetup_id = data.get("meetup_id")
     proposer_user_id = data.get("proposer_user_id")
@@ -1222,6 +1222,13 @@ async def finish_suggesting_meetup_games(callback: CallbackQuery, state: FSMCont
         return
 
     await state.clear()
+    owner_notified = await _notify_collection_owner_about_suggestion(
+        bot,
+        backend_client=backend_client,
+        meetup=meetup,
+        proposer_user_id=proposer_user_id,
+        collection_owner_user_id=collection_owner_user_id,
+    )
     try:
         await _refresh_group_meetup_card(
             bot,
@@ -1234,20 +1241,29 @@ async def finish_suggesting_meetup_games(callback: CallbackQuery, state: FSMCont
             "Saved suggestion for meetup %s but failed to refresh its Telegram card",
             meetup_id,
         )
+        warning = "Предложение сохранено, но карточку встречи не удалось обновить."
+        if not owner_notified:
+            warning += " Владельца коллекции уведомить не удалось."
         message = callback.message
         if isinstance(message, Message):
-            await message.edit_text(
-                "Предложение сохранено, но карточку встречи не удалось обновить."
-            )
-        await callback.answer(
-            "Предложение сохранено, но карточка встречи не обновилась.",
-            show_alert=True,
-        )
+            await message.edit_text(warning)
+        await callback.answer(warning, show_alert=True)
         return
 
     message = callback.message
     if isinstance(message, Message):
-        await message.edit_text("Предложение добавлено к встрече.", reply_markup=None)
+        result_text = (
+            "Предложение добавлено к встрече."
+            if owner_notified
+            else "Предложение добавлено, но владельца коллекции уведомить не удалось."
+        )
+        await message.edit_text(result_text, reply_markup=None)
+    if not owner_notified:
+        await callback.answer(
+            "Предложение добавлено, но владельца коллекции уведомить не удалось.",
+            show_alert=True,
+        )
+        return
     await callback.answer("Предложение добавлено.")
 
 
@@ -2325,13 +2341,27 @@ def _format_game_suggestion_lines(suggestions: list[dict]) -> list[str]:
             if username
             else escape(suggestion.get("display_name") or "Участник")
         )
-        game_titles = [
-            escape(str(game.get("title") or "Игра"))
-            for game in suggestion.get("games", [])
-        ]
+        game_titles = [escape(str(game.get("title") or "Игра")) for game in suggestion.get("games", [])]
         if game_titles:
             lines.append(f"{proposer} предлагает игры: {', '.join(game_titles)}")
     return lines
+
+
+def _format_collection_owner_suggestion_notification(
+    meetup: dict,
+    suggestion: dict,
+) -> str:
+    date_label = escape(format_meetup_datetime(meetup["scheduled_at"]))
+    proposer = _format_actor_display_name(suggestion)
+    game_titles = [
+        escape(str(game.get("title") or "Игра"))
+        for game in suggestion.get("games", [])
+    ]
+    return (
+        f"{proposer} рекомендует игры из вашей коллекции "
+        f"для встречи <code>{date_label}</code>:\n"
+        f"{', '.join(game_titles)}"
+    )
 
 
 def _format_meetup_heading(meetup: dict, selected_games: list[dict] | None = None) -> str:
@@ -2413,6 +2443,69 @@ async def _notify_meetup_creator_about_participation(
             creator["telegram_id"],
             meetup["id"],
         )
+
+
+async def _notify_collection_owner_about_suggestion(
+    bot: Bot,
+    *,
+    backend_client: BackendAPIClient,
+    meetup: dict,
+    proposer_user_id: int,
+    collection_owner_user_id: int,
+) -> bool:
+    if collection_owner_user_id == proposer_user_id:
+        return True
+
+    suggestion = next(
+        (
+            entry
+            for entry in meetup.get("game_suggestions", [])
+            if entry.get("proposer_user_id") == proposer_user_id
+        ),
+        None,
+    )
+    if suggestion is None or not suggestion.get("games"):
+        logger.error(
+            "Saved suggestion for meetup %s is missing proposer %s games",
+            meetup["id"],
+            proposer_user_id,
+        )
+        return False
+
+    try:
+        owner = await backend_client.get_user(collection_owner_user_id)
+    except httpx.HTTPError:
+        logger.exception(
+            "Failed to fetch collection owner %s for meetup %s suggestion notification",
+            collection_owner_user_id,
+            meetup["id"],
+        )
+        return False
+
+    telegram_id = owner.get("telegram_id")
+    if not isinstance(telegram_id, int):
+        logger.error(
+            "Collection owner %s has no valid Telegram ID for meetup %s suggestion notification",
+            collection_owner_user_id,
+            meetup["id"],
+        )
+        return False
+
+    try:
+        await bot.send_message(
+            chat_id=telegram_id,
+            text=_format_collection_owner_suggestion_notification(meetup, suggestion),
+            parse_mode="HTML",
+        )
+    except TelegramAPIError:
+        logger.exception(
+            "Failed to send suggestion notification to collection owner telegram_id=%s "
+            "for meetup %s",
+            telegram_id,
+            meetup["id"],
+        )
+        return False
+    return True
 
 
 def _format_participant_line(participant: dict) -> str:

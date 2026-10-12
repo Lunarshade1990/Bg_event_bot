@@ -1,7 +1,9 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
+from aiogram.exceptions import TelegramAPIError
 
 from bot.app.handlers.meetups import (
     _format_actor_display_name,
@@ -14,6 +16,7 @@ from bot.app.handlers.meetups import (
     _parse_chat_id,
     _show_suggestion_source_prompt,
     _start_private_chat_meetup_creation,
+    finish_suggesting_meetup_games,
     receive_meetup_date,
     skip_game_selection,
 )
@@ -89,6 +92,186 @@ async def test_suggestion_prompt_is_sent_to_user_private_chat() -> None:
     assert bot.send_message.await_args.kwargs["chat_id"] == 12345
     assert state.data["meetup_id"] == 42
     assert state.data["card_has_photo"] is True
+
+
+def _suggestion_flow_state(*, collection_owner_user_id: int) -> "DummyState":
+    state = DummyState()
+    state.data = {
+        "selected_game_ids": [7],
+        "selected_games": [{"id": 7, "title": "Catan <Deluxe>"}],
+        "meetup_id": 42,
+        "proposer_user_id": 9,
+        "proposer_telegram_id": 900,
+        "collection_owner_user_id": collection_owner_user_id,
+        "card_has_photo": False,
+    }
+    return state
+
+
+def _suggestion_callback(monkeypatch):
+    monkeypatch.setattr("bot.app.handlers.meetups.Message", SimpleNamespace)
+    message = SimpleNamespace(edit_text=AsyncMock())
+    bot = SimpleNamespace(send_message=AsyncMock())
+    return (
+        SimpleNamespace(
+            bot=bot,
+            message=message,
+            answer=AsyncMock(),
+        ),
+        bot,
+        message,
+    )
+
+
+def _saved_suggestion_meetup() -> dict:
+    return {
+        "id": 42,
+        "scheduled_at": "2026-10-08T18:00:00+00:00",
+        "telegram_chat_id": -1001,
+        "telegram_message_id": 111,
+        "game_suggestions": [
+            {
+                "proposer_user_id": 9,
+                "username": "recommender",
+                "display_name": "Recommender",
+                "games": [{"id": 7, "title": "Catan <Deluxe>"}],
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_foreign_collection_suggestion_notifies_collection_owner(monkeypatch) -> None:
+    saved_meetup = _saved_suggestion_meetup()
+
+    class SuggestionBackend(FakeBackendAPIClient):
+        async def suggest_meetup_games(self, *args, **kwargs):
+            return saved_meetup
+
+        async def get_user(self, user_id: int):
+            assert user_id == 12
+            return {"telegram_id": 1200}
+
+    monkeypatch.setattr("bot.app.handlers.meetups.BackendAPIClient", SuggestionBackend)
+    monkeypatch.setattr(
+        "bot.app.handlers.meetups._refresh_group_meetup_card",
+        AsyncMock(),
+    )
+    callback, bot, message = _suggestion_callback(monkeypatch)
+
+    await finish_suggesting_meetup_games(
+        callback,
+        _suggestion_flow_state(collection_owner_user_id=12),
+    )
+
+    bot.send_message.assert_awaited_once()
+    notification = bot.send_message.await_args.kwargs
+    assert notification["chat_id"] == 1200
+    assert "@recommender рекомендует" in notification["text"]
+    assert "Catan &lt;Deluxe&gt;" in notification["text"]
+    assert "08.10.2026" in notification["text"]
+    assert message.edit_text.await_args.args[0] == "Предложение добавлено к встрече."
+    callback.answer.assert_awaited_once_with("Предложение добавлено.")
+
+
+@pytest.mark.asyncio
+async def test_own_collection_suggestion_does_not_notify_owner(monkeypatch) -> None:
+    saved_meetup = _saved_suggestion_meetup()
+
+    class SuggestionBackend(FakeBackendAPIClient):
+        async def suggest_meetup_games(self, *args, **kwargs):
+            return saved_meetup
+
+        async def get_user(self, user_id: int):
+            raise AssertionError("The proposer must not be notified about their own collection.")
+
+    monkeypatch.setattr("bot.app.handlers.meetups.BackendAPIClient", SuggestionBackend)
+    monkeypatch.setattr(
+        "bot.app.handlers.meetups._refresh_group_meetup_card",
+        AsyncMock(),
+    )
+    callback, bot, message = _suggestion_callback(monkeypatch)
+
+    await finish_suggesting_meetup_games(
+        callback,
+        _suggestion_flow_state(collection_owner_user_id=9),
+    )
+
+    bot.send_message.assert_not_awaited()
+    assert message.edit_text.await_args.args[0] == "Предложение добавлено к встрече."
+    callback.answer.assert_awaited_once_with("Предложение добавлено.")
+
+
+@pytest.mark.asyncio
+async def test_failed_collection_owner_lookup_keeps_suggestion_and_warns_proposer(
+    monkeypatch,
+) -> None:
+    saved_meetup = _saved_suggestion_meetup()
+
+    class SuggestionBackend(FakeBackendAPIClient):
+        async def suggest_meetup_games(self, *args, **kwargs):
+            return saved_meetup
+
+        async def get_user(self, user_id: int):
+            raise httpx.ConnectError("Backend unavailable")
+
+    monkeypatch.setattr("bot.app.handlers.meetups.BackendAPIClient", SuggestionBackend)
+    refresh = AsyncMock()
+    monkeypatch.setattr("bot.app.handlers.meetups._refresh_group_meetup_card", refresh)
+    callback, bot, message = _suggestion_callback(monkeypatch)
+
+    await finish_suggesting_meetup_games(
+        callback,
+        _suggestion_flow_state(collection_owner_user_id=12),
+    )
+
+    refresh.assert_awaited_once()
+    bot.send_message.assert_not_awaited()
+    assert message.edit_text.await_args.args[0] == (
+        "Предложение добавлено, но владельца коллекции уведомить не удалось."
+    )
+    callback.answer.assert_awaited_once_with(
+        "Предложение добавлено, но владельца коллекции уведомить не удалось.",
+        show_alert=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_telegram_delivery_keeps_suggestion_and_warns_proposer(
+    monkeypatch,
+) -> None:
+    saved_meetup = _saved_suggestion_meetup()
+
+    class SuggestionBackend(FakeBackendAPIClient):
+        async def suggest_meetup_games(self, *args, **kwargs):
+            return saved_meetup
+
+        async def get_user(self, user_id: int):
+            return {"telegram_id": 1200}
+
+    monkeypatch.setattr("bot.app.handlers.meetups.BackendAPIClient", SuggestionBackend)
+    refresh = AsyncMock()
+    monkeypatch.setattr("bot.app.handlers.meetups._refresh_group_meetup_card", refresh)
+    callback, bot, message = _suggestion_callback(monkeypatch)
+    bot.send_message.side_effect = TelegramAPIError(
+        method=SimpleNamespace(),
+        message="bot was blocked by the user",
+    )
+
+    await finish_suggesting_meetup_games(
+        callback,
+        _suggestion_flow_state(collection_owner_user_id=12),
+    )
+
+    refresh.assert_awaited_once()
+    bot.send_message.assert_awaited_once()
+    assert message.edit_text.await_args.args[0] == (
+        "Предложение добавлено, но владельца коллекции уведомить не удалось."
+    )
+    callback.answer.assert_awaited_once_with(
+        "Предложение добавлено, но владельца коллекции уведомить не удалось.",
+        show_alert=True,
+    )
 
 
 def test_game_suggestion_lines_include_user_and_escape_game_titles() -> None:

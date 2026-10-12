@@ -1,5 +1,7 @@
 from backend.app.db.models.bgg_import_job import BggImportJob
 from backend.app.db.models.game import Game
+from backend.app.db.models.game_randomizer_category import GameRandomizerCategory
+from backend.app.db.models.game_randomizer_option import GameRandomizerOption
 from backend.app.db.models.meetup import Meetup
 from backend.app.db.models.meetup_game import MeetupGame
 from backend.app.db.models.meetup_game_suggestion import MeetupGameSuggestion
@@ -12,6 +14,8 @@ from backend.app.db.models.user_game import UserGame
 __all__ = [
     "BggImportJob",
     "Game",
+    "GameRandomizerCategory",
+    "GameRandomizerOption",
     "Meetup",
     "MeetupGame",
     "MeetupGameSuggestion",

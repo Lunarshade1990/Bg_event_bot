@@ -31,8 +31,9 @@ class BackendAPIClient:
             "first_name": first_name,
             "last_name": last_name,
             "display_name": display_name,
-            "bgg_username": bgg_username,
         }
+        if bgg_username is not None:
+            payload["bgg_username"] = bgg_username
         async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
             response = await client.post("/api/users/telegram", json=payload)
             response.raise_for_status()
@@ -99,6 +100,149 @@ class BackendAPIClient:
 
         async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
             response = await client.get("/api/games", params=filtered_params)
+            response.raise_for_status()
+            return response.json()
+
+    async def list_randomizer_games(
+        self,
+        *,
+        telegram_id: int,
+        title: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[dict]:
+        params = {"telegram_id": telegram_id, "title": title, "limit": limit, "offset": offset}
+        filtered_params = {key: value for key, value in params.items() if value is not None}
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.get("/api/randomizers/games", params=filtered_params)
+            response.raise_for_status()
+            return response.json()
+
+    async def get_game_randomizer(self, *, telegram_id: int, game_id: int) -> dict:
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.get(
+                f"/api/randomizers/{game_id}",
+                params={"telegram_id": telegram_id},
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def create_game_randomizer_category(
+        self,
+        *,
+        telegram_id: int,
+        game_id: int,
+        name: str,
+        draw_count: int | None,
+    ) -> dict:
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.post(
+                f"/api/randomizers/{game_id}/categories",
+                params={"telegram_id": telegram_id},
+                json={"name": name, "draw_count": draw_count},
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def update_game_randomizer_category(
+        self,
+        *,
+        telegram_id: int,
+        game_id: int,
+        category_id: int,
+        payload: dict,
+    ) -> dict:
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.patch(
+                f"/api/randomizers/{game_id}/categories/{category_id}",
+                params={"telegram_id": telegram_id},
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def delete_game_randomizer_category(
+        self,
+        *,
+        telegram_id: int,
+        game_id: int,
+        category_id: int,
+    ) -> None:
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.delete(
+                f"/api/randomizers/{game_id}/categories/{category_id}",
+                params={"telegram_id": telegram_id},
+            )
+            response.raise_for_status()
+
+    async def add_game_randomizer_options(
+        self,
+        *,
+        telegram_id: int,
+        game_id: int,
+        category_id: int,
+        values: list[str],
+    ) -> dict:
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.post(
+                f"/api/randomizers/{game_id}/categories/{category_id}/options",
+                params={"telegram_id": telegram_id},
+                json={"values": values},
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def update_game_randomizer_option(
+        self,
+        *,
+        telegram_id: int,
+        game_id: int,
+        category_id: int,
+        option_id: int,
+        value: str,
+    ) -> dict:
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.patch(
+                f"/api/randomizers/{game_id}/categories/{category_id}/options/{option_id}",
+                params={"telegram_id": telegram_id},
+                json={"value": value},
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def delete_game_randomizer_option(
+        self,
+        *,
+        telegram_id: int,
+        game_id: int,
+        category_id: int,
+        option_id: int,
+    ) -> dict:
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.delete(
+                f"/api/randomizers/{game_id}/categories/{category_id}/options/{option_id}",
+                params={"telegram_id": telegram_id},
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def draw_game_randomizer(
+        self,
+        *,
+        telegram_id: int,
+        game_id: int,
+        category_ids: list[int],
+        player_count: int | None = None,
+    ) -> dict:
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.post(
+                f"/api/randomizers/{game_id}/draw",
+                params={"telegram_id": telegram_id},
+                json={
+                    "category_ids": category_ids,
+                    "player_count": player_count,
+                },
+            )
             response.raise_for_status()
             return response.json()
 
@@ -255,7 +399,9 @@ class BackendAPIClient:
             response.raise_for_status()
             return response.json()
 
-    async def set_meetup_telegram_message_id(self, meetup_id: int, *, telegram_message_id: int) -> dict:
+    async def set_meetup_telegram_message_id(
+        self, meetup_id: int, *, telegram_message_id: int
+    ) -> dict:
         payload = {"telegram_message_id": telegram_message_id}
         async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
             response = await client.post(

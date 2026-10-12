@@ -6,6 +6,8 @@ def test_all_expected_tables_are_registered() -> None:
     expected_tables = {
         "bgg_import_jobs",
         "games",
+        "game_randomizer_categories",
+        "game_randomizer_options",
         "meetup_games",
         "meetup_participants",
         "meetups",

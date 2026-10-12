@@ -1,4 +1,4 @@
-from sqlalchemy import desc, exists, func, select
+from sqlalchemy import desc, exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from backend.app.db.models.enums import GameType
@@ -25,9 +25,18 @@ def list_randomizer_games(
             func.lower(func.trim(User.bgg_username)) == bgg_username,
         )
     )
+    has_saved_randomizer = exists(
+        select(GameRandomizerCategory.id).where(
+            GameRandomizerCategory.game_id == Game.id,
+            GameRandomizerCategory.bgg_username == bgg_username,
+        )
+    )
     stmt = (
         select(Game)
-        .where(Game.game_type == GameType.BASE)
+        .where(
+            Game.game_type == GameType.BASE,
+            or_(profile_owns_game, has_saved_randomizer),
+        )
         .order_by(desc(profile_owns_game), Game.title.asc())
     )
     if title:

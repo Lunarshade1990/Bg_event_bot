@@ -331,7 +331,13 @@ def get_meetup_chat_selection_keyboard(chat_topics: list[dict]) -> InlineKeyboar
 
 
 def get_game_group_keyboard(
-    groups: list[list[str]], selected_ids: set[Any]
+    groups: list[list[str]],
+    selected_ids: set[Any],
+    *,
+    callback_prefix: str = MEETUP_GAME_GROUP_CALLBACK_PREFIX,
+    include_done: bool = True,
+    include_skip: bool = True,
+    back_callback_data: str = MEETUP_CREATE_BACK_CALLBACK,
 ) -> InlineKeyboardMarkup:
     # build keyboard with group buttons
     rows: list[list[InlineKeyboardButton]] = []
@@ -341,55 +347,69 @@ def get_game_group_keyboard(
             [
                 InlineKeyboardButton(
                     text=label,
-                    callback_data=f"{MEETUP_GAME_GROUP_CALLBACK_PREFIX}:{idx}",
+                    callback_data=f"{callback_prefix}:{idx}",
                 )
             ]
         )
-    if selected_ids:
+    if selected_ids and include_done:
         rows.append([_get_button(ButtonTypes.DONE)])
-    rows.append([_get_button(ButtonTypes.SKIP)])
-    rows.append([_get_button(ButtonTypes.BACK)])
+    if include_skip:
+        rows.append([_get_button(ButtonTypes.SKIP)])
+    rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data=back_callback_data)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_letters_keyboard(
-    letters: list[str], *, selected_ids: set[int] | None = None
+    letters: list[str],
+    *,
+    selected_ids: set[int] | None = None,
+    callback_prefix: str = MEETUP_GAME_LETTER_CALLBACK_PREFIX,
+    include_done: bool = True,
+    include_skip: bool = True,
+    back_callback_data: str = MEETUP_CREATE_BACK_CALLBACK,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
     for i, ch in enumerate(letters):
-        row.append(
-            InlineKeyboardButton(
-                text=ch, callback_data=f"{MEETUP_GAME_LETTER_CALLBACK_PREFIX}:{ch}"
-            )
-        )
+        row.append(InlineKeyboardButton(text=ch, callback_data=f"{callback_prefix}:{ch}"))
         if (i + 1) % 3 == 0:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
 
-    if selected_ids:
+    if selected_ids and include_done:
         rows.append([_get_button(ButtonTypes.DONE)])
 
-    rows.append([_get_button(ButtonTypes.SKIP)])
-    rows.append([_get_button(ButtonTypes.BACK)])
+    if include_skip:
+        rows.append([_get_button(ButtonTypes.SKIP)])
+    rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data=back_callback_data)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_games_list_keyboard(
-    games: list[dict], selected_ids: set[int], page: int, has_more: bool
+    games: list[dict],
+    selected_ids: set[int],
+    page: int,
+    has_more: bool,
+    *,
+    callback_prefix: str = MEETUP_GAME_TOGGLE_CALLBACK_PREFIX,
+    page_callback_prefix: str = MEETUP_GAME_PAGE_CALLBACK_PREFIX,
+    show_selection: bool = True,
+    include_done: bool = True,
+    include_skip: bool = True,
+    back_callback_data: str = MEETUP_CREATE_BACK_CALLBACK,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for game in games:
         gid = game.get("id")
         title = game.get("title") or str(gid)
-        prefix = "✅ " if gid in selected_ids else ""
+        prefix = "✅ " if show_selection and gid in selected_ids else ""
         rows.append(
             [
                 InlineKeyboardButton(
                     text=f"{prefix}{title}",
-                    callback_data=f"{MEETUP_GAME_TOGGLE_CALLBACK_PREFIX}:{gid}",
+                    callback_data=f"{callback_prefix}:{gid}",
                 )
             ]
         )
@@ -399,24 +419,25 @@ def get_games_list_keyboard(
         nav_row.append(
             InlineKeyboardButton(
                 text="<- Назад",
-                callback_data=f"{MEETUP_GAME_PAGE_CALLBACK_PREFIX}:{page-1}",
+                callback_data=f"{page_callback_prefix}:{page - 1}",
             )
         )
     if has_more:
         nav_row.append(
             InlineKeyboardButton(
                 text="Вперед ->",
-                callback_data=f"{MEETUP_GAME_PAGE_CALLBACK_PREFIX}:{page+1}",
+                callback_data=f"{page_callback_prefix}:{page + 1}",
             )
         )
     if nav_row:
         rows.append(nav_row)
 
-    if selected_ids:
+    if selected_ids and include_done:
         rows.append([_get_button(ButtonTypes.DONE)])
 
-    rows.append([_get_button(ButtonTypes.SKIP)])
-    rows.append([_get_button(ButtonTypes.BACK)])
+    if include_skip:
+        rows.append([_get_button(ButtonTypes.SKIP)])
+    rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data=back_callback_data)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -10,11 +10,20 @@ from aiogram.types import (
     Message,
 )
 
+from bot.app.keyboards.meetups import (
+    get_game_group_keyboard,
+    get_games_list_keyboard,
+    get_letters_keyboard,
+)
 from bot.app.services.backend_api import BackendAPIClient
 from bot.app.states.random_game import RandomizerStates
 
 router = Router(name="randomizer")
 MENU_TEXT = "🎲 Рандомайзер"
+GAME_GROUP_CALLBACK = "rz:gamegroup"
+GAME_LETTER_CALLBACK = "rz:gameletter"
+GAME_PAGE_CALLBACK = "rz:gamepage"
+GAME_PICK_CALLBACK = "rz:pickgame"
 PAGE_SIZE = 8
 OPTIONS_PAGE_SIZE = 20
 
@@ -45,11 +54,7 @@ async def open_randomizer(message: Message, state: FSMContext) -> None:
         )
         return
 
-    await state.set_state(RandomizerStates.waiting_for_game_query)
-    await message.answer(
-        "Введи название игры или его часть. Сначала покажу базовые игры из коллекций "
-        "с твоим BGG-ником, затем остальные игры каталога. Для выхода напиши «Отмена»."
-    )
+    await _start_game_picker(message, state, user.id)
 
 
 @router.message(F.text.in_({"Отмена", "/cancel"}))
@@ -58,66 +63,106 @@ async def cancel_randomizer_flow(message: Message, state: FSMContext) -> None:
     await message.answer("Действие отменено.")
 
 
-@router.message(RandomizerStates.waiting_for_game_query)
-async def search_randomizer_games(message: Message, state: FSMContext) -> None:
-    user = message.from_user
-    title = (message.text or "").strip()
-    if user is None:
-        await message.answer("Не удалось определить пользователя Telegram.")
-        return
-    if not title:
-        await message.answer("Введи хотя бы часть названия игры.")
-        return
-
-    await state.update_data(game_query=title, game_offset=0)
-    await _render_game_page(
-        message=message,
-        state=state,
-        telegram_id=user.id,
-        title=title,
-        offset=0,
-    )
-
-
 @router.callback_query(F.message.chat.type != "private")
 async def reject_group_randomizer_callback(callback: CallbackQuery) -> None:
     await callback.answer("Рандомайзер работает только в личном чате с ботом.", show_alert=True)
 
 
-@router.callback_query(F.data.startswith("rz:games:"))
-async def paginate_games(callback: CallbackQuery, state: FSMContext) -> None:
-    message = callback.message
-    if message is None:
-        await callback.answer("Не удалось обновить список игр.", show_alert=True)
-        return
-    try:
-        offset = int(callback.data.rsplit(":", 1)[1])
-    except (AttributeError, ValueError):
-        await callback.answer("Некорректная страница.", show_alert=True)
-        return
+@router.callback_query(F.data.startswith(f"{GAME_GROUP_CALLBACK}:"))
+async def select_randomizer_game_group(callback: CallbackQuery, state: FSMContext) -> None:
+    index = _callback_int(callback.data, 2)
     data = await state.get_data()
-    title = data.get("game_query", "")
-    await state.update_data(game_offset=offset)
-    await _render_game_page(
-        message=message,
-        state=state,
-        telegram_id=callback.from_user.id,
-        title=title,
-        offset=offset,
-        edit_message=True,
-    )
+    groups = data.get("randomizer_letter_groups") or []
+    if index is None or index >= len(groups):
+        await callback.answer("Неизвестная группа букв.", show_alert=True)
+        return
+    await state.update_data(randomizer_current_group=index)
+    await _show_randomizer_letters(callback, state, list(groups[index]))
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("rz:game:"))
-async def select_game(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(F.data.startswith(f"{GAME_LETTER_CALLBACK}:"))
+async def select_randomizer_game_letter(callback: CallbackQuery, state: FSMContext) -> None:
+    letter = (callback.data or "").split(":", 2)[2]
+    data = await state.get_data()
+    letters_map = data.get("randomizer_letters_map") or {}
+    games = letters_map.get(letter)
+    if not games:
+        await callback.answer("Игры на эту букву не найдены.", show_alert=True)
+        return
+    await state.update_data(
+        randomizer_current_letter=letter,
+        randomizer_game_page=0,
+    )
+    await _show_randomizer_games_page(callback, state, letter, 0)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(f"{GAME_PAGE_CALLBACK}:"))
+async def change_randomizer_game_page(callback: CallbackQuery, state: FSMContext) -> None:
+    page = _callback_int(callback.data, 2)
+    data = await state.get_data()
+    letter = data.get("randomizer_current_letter")
+    if page is None or not letter:
+        await callback.answer("Некорректная страница игр.", show_alert=True)
+        return
+    await state.update_data(randomizer_game_page=page)
+    await _show_randomizer_games_page(callback, state, letter, page)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(f"{GAME_PICK_CALLBACK}:"))
+async def select_randomizer_game(callback: CallbackQuery, state: FSMContext) -> None:
     game_id = _callback_int(callback.data, 2)
     if game_id is None:
         await callback.answer("Некорректная игра.", show_alert=True)
         return
-    await state.clear()
     await state.update_data(game_id=game_id, selected_category_ids=[])
     await _render_game_menu(callback, state, game_id)
+
+
+@router.callback_query(F.data == "rz:picker:back")
+async def back_to_randomizer_letters(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    letter = data.get("randomizer_current_letter")
+    if letter:
+        await state.update_data(randomizer_current_letter=None)
+    group_index = data.get("randomizer_current_group")
+    if group_index is not None:
+        groups = data.get("randomizer_letter_groups") or []
+        groups = groups if group_index < len(groups) else []
+        letters = list(groups[group_index]) if groups else []
+    else:
+        letters = sorted((data.get("randomizer_letters_map") or {}).keys())
+    await _show_randomizer_letters(callback, state, letters)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "rz:pickergroups")
+async def back_to_randomizer_groups(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    groups = data.get("randomizer_letter_groups") or []
+    await _show_randomizer_groups(callback, groups)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "rz:backpicker")
+async def back_to_randomizer_game_page(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    letter = data.get("randomizer_current_letter")
+    page = data.get("randomizer_game_page", 0)
+    if not letter:
+        await _show_randomizer_picker(callback, state)
+    else:
+        await _show_randomizer_games_page(callback, state, letter, page)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "rz:picker:cancel")
+async def cancel_randomizer_picker(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await _edit_or_answer(callback, "Выбор игры отменён.")
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("rz:manage:"))
@@ -649,82 +694,157 @@ async def back_to_game_menu(callback: CallbackQuery, state: FSMContext) -> None:
     await _render_game_menu(callback, state, game_id)
 
 
-@router.callback_query(F.data.startswith("rz:backgames:"))
-async def back_to_games(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(RandomizerStates.waiting_for_game_query)
-    await _edit_or_answer(
-        callback,
-        "Введи название игры или его часть. Для выхода напиши «Отмена».",
-    )
-    await callback.answer()
-
-
-async def _render_game_page(
-    *,
+async def _start_game_picker(
     message: Message,
     state: FSMContext,
     telegram_id: int,
-    title: str,
-    offset: int,
-    edit_message: bool = False,
 ) -> None:
+    client = BackendAPIClient()
+    games: list[dict] = []
+    offset = 0
     try:
-        games = await BackendAPIClient().list_randomizer_games(
-            telegram_id=telegram_id,
-            title=title,
-            limit=PAGE_SIZE,
-            offset=offset,
-        )
+        while True:
+            batch = await client.list_randomizer_games(
+                telegram_id=telegram_id,
+                limit=100,
+                offset=offset,
+            )
+            games.extend(batch)
+            if len(batch) < 100:
+                break
+            offset += 100
     except httpx.HTTPStatusError as exc:
-        text = f"Не удалось загрузить игры: {_error_detail(exc)}"
-        await _send_or_edit(message, text, edit_message=edit_message)
+        await message.answer(f"Не удалось загрузить игры: {_error_detail(exc)}")
         return
     except httpx.HTTPError:
-        await _send_or_edit(
-            message,
-            "Не удалось связаться с backend API.",
-            edit_message=edit_message,
+        await message.answer("Не удалось связаться с backend API.")
+        return
+
+    letters_map: dict[str, list[dict]] = {}
+    for game in games:
+        title = (game.get("title") or "").strip()
+        if title and title[0].isalpha():
+            letters_map.setdefault(title[0].upper(), []).append(game)
+    letters = sorted(letters_map)
+    if not letters:
+        await message.answer(
+            "Не нашёл игр в этой коллекции. Сначала импортируй коллекцию через BGG."
         )
         return
-    if not games:
-        await _send_or_edit(
-            message,
-            "Игры не найдены в каталоге. Попробуй другое название.",
-            edit_message=edit_message,
+
+    groups = [letters[index : index + 6] for index in range(0, len(letters), 6)]
+    await state.update_data(
+        randomizer_letters_map=letters_map,
+        randomizer_letter_groups=groups if len(letters) > 5 else [],
+        randomizer_current_group=None,
+        randomizer_current_letter=None,
+        randomizer_game_page=0,
+    )
+    await _show_randomizer_picker_message(message, letters, groups)
+
+
+async def _show_randomizer_picker_message(
+    message: Message,
+    letters: list[str],
+    groups: list[list[str]],
+) -> None:
+    if len(letters) > 5:
+        keyboard = get_game_group_keyboard(
+            groups,
+            set(),
+            callback_prefix=GAME_GROUP_CALLBACK,
+            include_done=False,
+            include_skip=False,
+            back_callback_data="rz:picker:cancel",
         )
+        await message.answer("Выбери диапазон букв:", reply_markup=keyboard)
         return
-    rows = [
-        [
-            InlineKeyboardButton(
-                text=game["title"][:64],
-                callback_data=f"rz:game:{game['id']}",
-            )
-        ]
-        for game in games
-    ]
-    nav: list[InlineKeyboardButton] = []
-    if offset > 0:
-        nav.append(
-            InlineKeyboardButton(
-                text="← Назад",
-                callback_data=f"rz:games:{max(0, offset - PAGE_SIZE)}",
-            )
-        )
-    if len(games) == PAGE_SIZE:
-        nav.append(
-            InlineKeyboardButton(
-                text="Вперёд →",
-                callback_data=f"rz:games:{offset + PAGE_SIZE}",
-            )
-        )
-    if nav:
-        rows.append(nav)
-    rows.append([InlineKeyboardButton(text="Искать другую игру", callback_data="rz:backgames:0")])
-    await _send_or_edit(
-        message,
-        "Выбери игру:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
-        edit_message=edit_message,
+    keyboard = get_letters_keyboard(
+        letters,
+        callback_prefix=GAME_LETTER_CALLBACK,
+        include_done=False,
+        include_skip=False,
+        back_callback_data="rz:picker:cancel",
+    )
+    await message.answer("Выбери первую букву:", reply_markup=keyboard)
+
+
+async def _show_randomizer_picker(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    data = await state.get_data()
+    letters_map = data.get("randomizer_letters_map") or {}
+    groups = data.get("randomizer_letter_groups") or []
+    letters = sorted(letters_map)
+    if len(letters) > 5:
+        await _show_randomizer_groups(callback, groups)
+        return
+    await _show_randomizer_letters(callback, state, letters)
+
+
+async def _show_randomizer_groups(
+    callback: CallbackQuery,
+    groups: list[list[str]],
+) -> None:
+    keyboard = get_game_group_keyboard(
+        groups,
+        set(),
+        callback_prefix=GAME_GROUP_CALLBACK,
+        include_done=False,
+        include_skip=False,
+        back_callback_data="rz:picker:cancel",
+    )
+    await _edit_or_answer(callback, "Выбери диапазон букв:", keyboard)
+
+
+async def _show_randomizer_letters(
+    callback: CallbackQuery,
+    state: FSMContext,
+    letters: list[str],
+) -> None:
+    data = await state.get_data()
+    back_callback_data = (
+        "rz:pickergroups"
+        if data.get("randomizer_current_group") is not None
+        else "rz:picker:cancel"
+    )
+    keyboard = get_letters_keyboard(
+        letters,
+        callback_prefix=GAME_LETTER_CALLBACK,
+        include_done=False,
+        include_skip=False,
+        back_callback_data=back_callback_data,
+    )
+    await _edit_or_answer(callback, "Выбери первую букву:", keyboard)
+
+
+async def _show_randomizer_games_page(
+    callback: CallbackQuery,
+    state: FSMContext,
+    letter: str,
+    page: int,
+) -> None:
+    data = await state.get_data()
+    all_games = (data.get("randomizer_letters_map") or {}).get(letter, [])
+    start = page * PAGE_SIZE
+    games = all_games[start : start + PAGE_SIZE]
+    has_more = start + PAGE_SIZE < len(all_games)
+    await _edit_or_answer(
+        callback,
+        f"Игры на букву {letter} (страница {page + 1}):",
+        get_games_list_keyboard(
+            games,
+            set(),
+            page,
+            has_more,
+            callback_prefix=GAME_PICK_CALLBACK,
+            page_callback_prefix=GAME_PAGE_CALLBACK,
+            show_selection=False,
+            include_done=False,
+            include_skip=False,
+            back_callback_data="rz:picker:back",
+        ),
     )
 
 
@@ -758,7 +878,7 @@ async def _render_game_menu(
             )
         ]
     )
-    buttons.append([InlineKeyboardButton(text="← К выбору игр", callback_data="rz:backgames:0")])
+    buttons.append([InlineKeyboardButton(text="← К выбору игр", callback_data="rz:backpicker")])
     category_summary = "\n".join(
         f"• {escape(item['name'])}: {len(item['options'])} вариантов" for item in categories[:20]
     )
@@ -1166,19 +1286,6 @@ async def _edit_or_answer(
     if message is None:
         return
     await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
-
-
-async def _send_or_edit(
-    message: Message,
-    text: str,
-    *,
-    reply_markup: InlineKeyboardMarkup | None = None,
-    edit_message: bool,
-) -> None:
-    if edit_message:
-        await message.edit_text(text, reply_markup=reply_markup)
-    else:
-        await message.answer(text, reply_markup=reply_markup)
 
 
 def _callback_int(data: str | None, part_index: int) -> int | None:

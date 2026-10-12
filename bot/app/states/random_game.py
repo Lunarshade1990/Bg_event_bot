@@ -6,7 +6,6 @@ class RandomGameState(StatesGroup):
 
 
 class RandomizerStates(StatesGroup):
-    waiting_for_game_query = State()
     waiting_for_category_name = State()
     waiting_for_category_count = State()
     waiting_for_category_rename = State()

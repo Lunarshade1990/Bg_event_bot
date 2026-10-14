@@ -7,6 +7,7 @@ from aiogram.types import (
     BufferedInputFile,
     InputRichBlockParagraph,
     InputRichBlockPhoto,
+    InputRichBlockSlideshow,
     InputRichMessage,
     Message,
 )
@@ -139,7 +140,7 @@ def test_parse_other_games_callback() -> None:
     assert _parse_other_games_callback("other_games:12:bad") is None
 
 
-def test_games_rich_message_places_each_cover_after_its_game_title() -> None:
+def test_games_rich_message_groups_covers_in_slideshow_after_game_entries() -> None:
     entries = [
         {
             "game": {"title": "Catan"},
@@ -153,6 +154,12 @@ def test_games_rich_message_places_each_cover_after_its_game_title() -> None:
             "display_min_players": 2,
             "display_max_players": 5,
         },
+        {
+            "game": {"title": "Wingspan"},
+            "expansions": [],
+            "display_min_players": 1,
+            "display_max_players": 5,
+        },
     ]
     rich_message = _build_games_rich_message(
         title="Мои игры",
@@ -160,6 +167,7 @@ def test_games_rich_message_places_each_cover_after_its_game_title() -> None:
         offset=0,
         game_photos=[
             BufferedInputFile(b"first-cover", filename="first.jpg"),
+            None,
             BufferedInputFile(b"second-cover", filename="second.jpg"),
         ],
     )
@@ -169,10 +177,10 @@ def test_games_rich_message_places_each_cover_after_its_game_title() -> None:
         index
         for index, block in enumerate(blocks)
         if isinstance(block, InputRichBlockParagraph)
-        and getattr(block.text, "text", None) in {"1. Catan", "2. Carcassonne"}
+        and getattr(block.text, "text", None) in {"1. Catan", "2. Carcassonne", "3. Wingspan"}
     ]
-    photo_positions = [
-        index for index, block in enumerate(blocks) if isinstance(block, InputRichBlockPhoto)
+    slideshow_positions = [
+        index for index, block in enumerate(blocks) if isinstance(block, InputRichBlockSlideshow)
     ]
 
     assert [
@@ -180,8 +188,13 @@ def test_games_rich_message_places_each_cover_after_its_game_title() -> None:
     ] == [
         "1. Catan",
         "2. Carcassonne",
+        "3. Wingspan",
     ]
-    assert photo_positions == [title_positions[0] + 1, title_positions[1] + 1]
+    assert len(slideshow_positions) == 1
+    assert slideshow_positions[0] == len(blocks) - 1
+    slideshow = blocks[slideshow_positions[0]]
+    assert isinstance(slideshow, InputRichBlockSlideshow)
+    assert sum(isinstance(block, InputRichBlockPhoto) for block in slideshow.blocks) == 2
 
 
 def test_games_rich_message_keeps_game_details_and_expansions() -> None:
@@ -238,7 +251,7 @@ def test_games_rich_message_keeps_entries_without_cover_photos() -> None:
     blocks = rich_message.blocks or []
     paragraphs = [block.text for block in blocks if isinstance(block, InputRichBlockParagraph)]
     assert any(getattr(paragraph, "text", None) == "1. Catan" for paragraph in paragraphs)
-    assert not any(isinstance(block, InputRichBlockPhoto) for block in blocks)
+    assert not any(isinstance(block, InputRichBlockSlideshow) for block in blocks)
 
 
 @pytest.mark.asyncio

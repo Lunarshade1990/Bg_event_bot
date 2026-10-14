@@ -17,6 +17,7 @@ from aiogram.types import (
     InputRichBlockParagraph,
     InputRichBlockPhoto,
     InputRichBlockSectionHeading,
+    InputRichBlockSlideshow,
     InputRichMessage,
     Message,
     RichTextBold,
@@ -1589,6 +1590,11 @@ async def _build_group_meetup_rich_message(
 ) -> InputRichMessage:
     games = selected_games if selected_games is not None else meetup.get("games") or []
     game_photos = await load_game_cover_photos(games)
+    photo_blocks = [
+        InputRichBlockPhoto(photo=InputMediaPhoto(media=photo))
+        for photo in game_photos
+        if photo is not None
+    ]
     date_label = format_meetup_datetime(meetup["scheduled_at"])
     participants = meetup.get("participants", [])
     joined_count = len(participants)
@@ -1598,11 +1604,17 @@ async def _build_group_meetup_rich_message(
     if games:
         first_game_title = str(games[0].get("title") or "Встреча")
         heading_text = f"{first_game_title} {heading_text}"
-    blocks = [
-        InputRichBlockSectionHeading(text=heading_text, size=2),
-        InputRichBlockParagraph(text=f"Дата: {date_label}"),
-        InputRichBlockParagraph(text=f"Свободно мест: {free} из {capacity}"),
-    ]
+    blocks = []
+    if photo_blocks:
+        blocks.append(InputRichBlockSlideshow(blocks=photo_blocks))
+
+    blocks.extend(
+        [
+            InputRichBlockSectionHeading(text=heading_text, size=2),
+            InputRichBlockParagraph(text=f"Дата: {date_label}"),
+            InputRichBlockParagraph(text=f"Свободно мест: {free} из {capacity}"),
+        ]
+    )
 
     comment = meetup.get("comment")
     if comment:
@@ -1610,12 +1622,10 @@ async def _build_group_meetup_rich_message(
 
     if games:
         blocks.append(InputRichBlockSectionHeading(text="Игры", size=4))
-        for index, (game, photo) in enumerate(zip(games, game_photos, strict=True)):
+        for index, game in enumerate(games):
             blocks.append(
                 InputRichBlockParagraph(text=RichTextBold(text=str(game.get("title") or "Игра")))
             )
-            if photo is not None:
-                blocks.append(InputRichBlockPhoto(photo=InputMediaPhoto(media=photo)))
             if index < len(games) - 1:
                 blocks.append(InputRichBlockDivider())
 

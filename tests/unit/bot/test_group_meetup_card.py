@@ -4,7 +4,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiogram import Bot
-from aiogram.types import BufferedInputFile, InputRichBlockParagraph, InputRichBlockPhoto
+from aiogram.types import (
+    BufferedInputFile,
+    InputRichBlockParagraph,
+    InputRichBlockPhoto,
+    InputRichBlockSlideshow,
+)
 
 from bot.app.handlers.meetups import (
     _build_group_meetup_rich_message,
@@ -36,16 +41,17 @@ def test_group_meetup_card_does_not_contain_ids() -> None:
 
 
 @pytest.mark.asyncio
-async def test_group_meetup_rich_card_interleaves_game_titles_and_cover_photos(
+async def test_group_meetup_rich_card_places_cover_slideshow_at_the_beginning(
     monkeypatch,
 ) -> None:
     photos: list[BufferedInputFile | None] = [
         BufferedInputFile(b"first-cover", filename="first.jpg"),
+        None,
         BufferedInputFile(b"second-cover", filename="second.jpg"),
     ]
 
     async def load_photos(games: list[dict]) -> list[BufferedInputFile | None]:
-        assert len(games) == 2
+        assert len(games) == 3
         return photos
 
     monkeypatch.setattr(
@@ -62,6 +68,7 @@ async def test_group_meetup_rich_card_interleaves_game_titles_and_cover_photos(
             "games": [
                 {"title": "Catan", "image_url": "https://example.test/catan.jpg"},
                 {"title": "Carcassonne", "image_url": "https://example.test/carcassonne.jpg"},
+                {"title": "Wingspan", "image_url": "https://example.test/wingspan.jpg"},
             ],
         }
     )
@@ -71,17 +78,21 @@ async def test_group_meetup_rich_card_interleaves_game_titles_and_cover_photos(
         index
         for index, block in enumerate(blocks)
         if isinstance(block, InputRichBlockParagraph)
-        and getattr(block.text, "text", None) in {"Catan", "Carcassonne"}
+        and getattr(block.text, "text", None) in {"Catan", "Carcassonne", "Wingspan"}
     ]
-    photo_positions = [
-        index for index, block in enumerate(blocks) if isinstance(block, InputRichBlockPhoto)
+    slideshow_positions = [
+        index for index, block in enumerate(blocks) if isinstance(block, InputRichBlockSlideshow)
     ]
 
     assert [
         getattr(getattr(blocks[index], "text", None), "text", None)
         for index in game_title_positions
-    ] == ["Catan", "Carcassonne"]
-    assert photo_positions == [game_title_positions[0] + 1, game_title_positions[1] + 1]
+    ] == ["Catan", "Carcassonne", "Wingspan"]
+    assert len(slideshow_positions) == 1
+    assert slideshow_positions[0] == 0
+    slideshow = blocks[slideshow_positions[0]]
+    assert isinstance(slideshow, InputRichBlockSlideshow)
+    assert sum(isinstance(block, InputRichBlockPhoto) for block in slideshow.blocks) == 2
 
 
 @pytest.mark.asyncio
@@ -111,7 +122,7 @@ async def test_group_meetup_rich_card_keeps_game_title_when_cover_missing(
         isinstance(block, InputRichBlockParagraph) and getattr(block.text, "text", None) == "Catan"
         for block in blocks
     )
-    assert not any(isinstance(block, InputRichBlockPhoto) for block in blocks)
+    assert not any(isinstance(block, InputRichBlockSlideshow) for block in blocks)
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ from aiogram.types import (
     InputRichBlockParagraph,
     InputRichBlockPhoto,
     InputRichBlockSectionHeading,
+    InputRichBlockSlideshow,
     InputRichMessage,
     Message,
     RichTextBold,
@@ -426,6 +427,7 @@ def _build_games_rich_message(
         InputRichBlockSectionHeading(text=title, size=2),
         InputRichBlockParagraph(text=f"Страница {page_number}"),
     ]
+    photo_blocks = []
 
     for index, (entry, photo) in enumerate(
         zip(entries, game_photos, strict=True),
@@ -438,10 +440,13 @@ def _build_games_rich_message(
             )
         )
         if photo is not None:
-            blocks.append(InputRichBlockPhoto(photo=InputMediaPhoto(media=photo)))
+            photo_blocks.append(InputRichBlockPhoto(photo=InputMediaPhoto(media=photo)))
         details = _format_grouped_game_details(entry)
         if details:
             blocks.append(InputRichBlockParagraph(text="\n".join(details)))
+
+    if photo_blocks:
+        blocks.append(InputRichBlockSlideshow(blocks=photo_blocks))
 
     return InputRichMessage(blocks=blocks)
 

@@ -1,8 +1,17 @@
-from html import escape
-
 import httpx
 from aiogram import F, Router
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    InputRichBlockParagraph,
+    InputRichBlockPhoto,
+    InputRichBlockSectionHeading,
+    InputRichMessage,
+    Message,
+    RichTextBold,
+)
 
 from bot.app.keyboards.games import (
     MY_GAMES_CALLBACK_PREFIX,
@@ -16,6 +25,7 @@ from bot.app.keyboards.games import (
 )
 from bot.app.services.backend_api import BackendAPIClient
 from bot.app.services.game_service import load_owned_games
+from bot.app.services.rich_message_media import load_game_cover_photos
 
 router = Router(name="games")
 
@@ -45,7 +55,7 @@ async def paginate_my_games(callback: CallbackQuery) -> None:
     user = callback.from_user
     message = callback.message
 
-    if message is None:
+    if not isinstance(message, Message):
         await callback.answer("Не удалось обновить список игр.", show_alert=True)
         return
 
@@ -79,7 +89,7 @@ async def paginate_my_games(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith(f"{OTHER_USERS_CALLBACK_PREFIX}:"))
 async def paginate_other_users(callback: CallbackQuery) -> None:
     message = callback.message
-    if message is None:
+    if not isinstance(message, Message):
         await callback.answer("Не удалось обновить список.", show_alert=True)
         return
 
@@ -100,7 +110,7 @@ async def paginate_other_users(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith(f"{OTHER_GAMES_CALLBACK_PREFIX}:"))
 async def show_other_user_games(callback: CallbackQuery) -> None:
     message = callback.message
-    if message is None:
+    if not isinstance(message, Message):
         await callback.answer("Не удалось открыть коллекцию.", show_alert=True)
         return
 
@@ -162,7 +172,7 @@ async def _render_my_games_page(
     return await _render_user_games_page(
         message=message,
         owner_user_id=profile["id"],
-        title="<b>Мои игры</b>",
+        title="Мои игры",
         empty_text=(
             "У тебя пока нет игр в коллекции.\n\n"
             "Нажми «Импорт из BGG», и я подтяну список из BoardGameGeek."
@@ -292,7 +302,7 @@ async def _render_other_user_games_page(
     return await _render_user_games_page(
         message=message,
         owner_user_id=owner_user_id,
-        title=f"<b>Игры: {owner_label}</b>",
+        title=f"Игры: {owner_label}",
         empty_text=f"У {owner_label} пока нет игр в коллекции.",
         offset=offset,
         edit_message=edit_message,
@@ -341,15 +351,43 @@ async def _render_user_games_page(
         return False
 
     has_next_page = offset + MY_GAMES_PAGE_SIZE < len(grouped_entries)
-    text = _format_games_list_text(title, visible_entries, offset=offset)
+    game_photos = await load_game_cover_photos([entry["game"] for entry in visible_entries])
+    rich_message = _build_games_rich_message(
+        title=title,
+        entries=visible_entries,
+        offset=offset,
+        game_photos=game_photos,
+    )
     keyboard = keyboard_factory(offset, has_next_page)
-    await _send_games_message(
+    await _send_games_rich_message(
         message=message,
-        text=text,
+        rich_message=rich_message,
         edit_message=edit_message,
         reply_markup=keyboard,
     )
     return True
+
+
+async def _send_games_rich_message(
+    *,
+    message: Message,
+    rich_message: InputRichMessage,
+    edit_message: bool,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    if edit_message:
+        await message.edit_text(rich_message=rich_message, reply_markup=reply_markup)
+        return
+
+    bot = message.bot
+    if bot is None:
+        raise RuntimeError("Cannot send a rich games message without a bot instance.")
+
+    await bot.send_rich_message(
+        chat_id=message.chat.id,
+        rich_message=rich_message,
+        reply_markup=reply_markup,
+    )
 
 
 async def _send_games_message(
@@ -376,31 +414,48 @@ async def _send_games_message(
     )
 
 
-def _format_games_list_text(title: str, entries: list[dict], *, offset: int) -> str:
+def _build_games_rich_message(
+    *,
+    title: str,
+    entries: list[dict],
+    offset: int,
+    game_photos: list[BufferedInputFile | None],
+) -> InputRichMessage:
     page_number = offset // MY_GAMES_PAGE_SIZE + 1
-    lines = [title, f"Страница {page_number}", ""]
+    blocks = [
+        InputRichBlockSectionHeading(text=title, size=2),
+        InputRichBlockParagraph(text=f"Страница {page_number}"),
+    ]
 
-    for index, entry in enumerate(entries, start=offset + 1):
-        lines.append(_format_grouped_game_line(index=index, entry=entry))
+    for index, (entry, photo) in enumerate(
+        zip(entries, game_photos, strict=True),
+        start=offset + 1,
+    ):
+        game = entry["game"]
+        blocks.append(
+            InputRichBlockParagraph(
+                text=RichTextBold(text=f"{index}. {game.get('title') or 'Игра'}")
+            )
+        )
+        if photo is not None:
+            blocks.append(InputRichBlockPhoto(photo=InputMediaPhoto(media=photo)))
+        details = _format_grouped_game_details(entry)
+        if details:
+            blocks.append(InputRichBlockParagraph(text="\n".join(details)))
 
-    return "\n\n".join(lines)
-
-
-def _format_my_games_text(entries: list[dict], *, offset: int) -> str:
-    return _format_games_list_text("<b>Мои игры</b>", entries, offset=offset)
+    return InputRichMessage(blocks=blocks)
 
 
 def _format_user_display_name(user: dict) -> str:
     username = user.get("username")
-    display_name = escape(user.get("display_name") or "Игрок")
+    display_name = user.get("display_name") or "Игрок"
     if username:
-        return f"@{escape(username)}"
+        return f"@{username}"
     return display_name
 
 
-def _format_grouped_game_line(*, index: int, entry: dict) -> str:
+def _format_grouped_game_details(entry: dict) -> list[str]:
     game = entry["game"]
-    title = escape(game["title"])
     players = _format_players(entry["display_min_players"], entry["display_max_players"])
     duration = _format_duration(game.get("play_time_minutes"))
     game_type = "База" if game.get("game_type") == "base" else "Дополнение"
@@ -411,19 +466,21 @@ def _format_grouped_game_line(*, index: int, entry: dict) -> str:
 
     details = ", ".join([players, duration, *tags])
     author = game.get("author")
-    lines = [f"{index}. <b>{title}</b>"]
+    lines: list[str] = []
 
     if author:
-        lines.append(f"Автор: {escape(author)}")
+        lines.append(f"Автор: {author}")
 
     lines.append(details)
 
     expansions = entry["expansions"]
     if expansions:
-        expansion_titles = ", ".join(escape(expansion["title"]) for expansion in expansions)
+        expansion_titles = ", ".join(
+            str(expansion.get("title") or "Дополнение") for expansion in expansions
+        )
         lines.append(f"Допы: {expansion_titles}")
 
-    return "\n".join(lines)
+    return lines
 
 
 def _format_players(min_players: int, max_players: int) -> str:
@@ -451,10 +508,6 @@ def _parse_single_offset(callback_data: str | None, prefix: str) -> int | None:
         return None
 
     return int(value)
-
-
-def _parse_offset(callback_data: str | None) -> int | None:
-    return _parse_single_offset(callback_data, MY_GAMES_CALLBACK_PREFIX)
 
 
 def _parse_other_games_callback(callback_data: str | None) -> tuple[int, int] | None:

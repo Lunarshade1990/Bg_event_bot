@@ -1,10 +1,22 @@
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import AsyncMock
+
+import pytest
+from aiogram.types import (
+    BufferedInputFile,
+    InputRichBlockParagraph,
+    InputRichBlockPhoto,
+    InputRichMessage,
+    Message,
+)
+
 from bot.app.handlers.games import (
-    _format_games_list_text,
-    _format_grouped_game_line,
-    _format_my_games_text,
+    _build_games_rich_message,
     _format_user_display_name,
-    _parse_offset,
     _parse_other_games_callback,
+    _parse_single_offset,
+    _send_games_rich_message,
 )
 from bot.app.services.game_service import (
     _build_grouped_entry,
@@ -110,64 +122,11 @@ def test_calculate_max_for_all_selected_games_considers_owned_expansions() -> No
     assert calculate_max_for_all_selected_games(selected_games, owned_expansions) == 5
 
 
-def test_format_my_games_text_renders_expansions_line() -> None:
-    entries = [
-        {
-            "game": {
-                "title": "Gloomhaven",
-                "author": "Isaac Childres",
-                "play_time_minutes": 180,
-                "game_type": "base",
-                "has_campaign": True,
-            },
-            "expansions": [
-                {"title": "Forgotten Circles"},
-                {"title": "Jaws Crossover"},
-            ],
-            "display_min_players": 1,
-            "display_max_players": 6,
-        }
-    ]
-
-    text = _format_my_games_text(entries, offset=5)
-
-    assert "<b>Мои игры</b>" in text
-    assert "Страница 2" in text
-    assert "6. <b>Gloomhaven</b>" in text
-    assert "Автор: Isaac Childres" in text
-    assert "1-6 игрок., 180 мин, База, кампания" in text
-    assert "Допы: Forgotten Circles, Jaws Crossover" in text
-
-
-def test_format_grouped_game_line_escapes_html_in_game_fields() -> None:
-    text = _format_grouped_game_line(
-        index=1,
-        entry={
-            "game": {
-                "title": "<Root>",
-                "author": "Tom & Jerry",
-                "play_time_minutes": None,
-                "game_type": "base",
-                "has_campaign": False,
-            },
-            "expansions": [{"title": "<Riverfolk>"}],
-            "display_min_players": 2,
-            "display_max_players": 2,
-        },
-    )
-
-    assert "&lt;Root&gt;" in text
-    assert "Tom &amp; Jerry" in text
-    assert "2 игрок." in text
-    assert "время не указано" in text
-    assert "&lt;Riverfolk&gt;" in text
-
-
 def test_parse_offset_returns_none_for_invalid_callback_data() -> None:
-    assert _parse_offset("my_games:10") == 10
-    assert _parse_offset("my_games:not-a-number") is None
-    assert _parse_offset("other:10") is None
-    assert _parse_offset(None) is None
+    assert _parse_single_offset("my_games:10", "my_games") == 10
+    assert _parse_single_offset("my_games:not-a-number", "my_games") is None
+    assert _parse_single_offset("other:10", "my_games") is None
+    assert _parse_single_offset(None, "my_games") is None
 
 
 def test_format_user_display_name_prefers_username() -> None:
@@ -180,24 +139,121 @@ def test_parse_other_games_callback() -> None:
     assert _parse_other_games_callback("other_games:12:bad") is None
 
 
-def test_format_games_list_text_uses_custom_title() -> None:
-    text = _format_games_list_text(
-        "<b>Игры: @alice</b>",
-        [
+def test_games_rich_message_places_each_cover_after_its_game_title() -> None:
+    entries = [
+        {
+            "game": {"title": "Catan"},
+            "expansions": [],
+            "display_min_players": 2,
+            "display_max_players": 4,
+        },
+        {
+            "game": {"title": "Carcassonne"},
+            "expansions": [],
+            "display_min_players": 2,
+            "display_max_players": 5,
+        },
+    ]
+    rich_message = _build_games_rich_message(
+        title="Мои игры",
+        entries=entries,
+        offset=0,
+        game_photos=[
+            BufferedInputFile(b"first-cover", filename="first.jpg"),
+            BufferedInputFile(b"second-cover", filename="second.jpg"),
+        ],
+    )
+
+    blocks = rich_message.blocks or []
+    title_positions = [
+        index
+        for index, block in enumerate(blocks)
+        if isinstance(block, InputRichBlockParagraph)
+        and getattr(block.text, "text", None) in {"1. Catan", "2. Carcassonne"}
+    ]
+    photo_positions = [
+        index for index, block in enumerate(blocks) if isinstance(block, InputRichBlockPhoto)
+    ]
+
+    assert [
+        getattr(getattr(blocks[index], "text", None), "text", None) for index in title_positions
+    ] == [
+        "1. Catan",
+        "2. Carcassonne",
+    ]
+    assert photo_positions == [title_positions[0] + 1, title_positions[1] + 1]
+
+
+def test_games_rich_message_keeps_game_details_and_expansions() -> None:
+    rich_message = _build_games_rich_message(
+        title="Мои игры",
+        entries=[
             {
                 "game": {
-                    "title": "Catan",
-                    "author": None,
-                    "play_time_minutes": 90,
+                    "title": "Gloomhaven",
+                    "author": "Isaac Childres",
+                    "play_time_minutes": 180,
                     "game_type": "base",
-                    "has_campaign": False,
+                    "has_campaign": True,
                 },
+                "expansions": [
+                    {"title": "Forgotten Circles"},
+                    {"title": "Jaws Crossover"},
+                ],
+                "display_min_players": 1,
+                "display_max_players": 6,
+            }
+        ],
+        offset=5,
+        game_photos=[None],
+    )
+
+    paragraphs = "\n".join(
+        block.text if isinstance(block.text, str) else getattr(block.text, "text", "")
+        for block in rich_message.blocks or []
+        if isinstance(block, InputRichBlockParagraph)
+    )
+
+    assert "Страница 2" in paragraphs
+    assert "Автор: Isaac Childres" in paragraphs
+    assert "1-6 игрок., 180 мин, База, кампания" in paragraphs
+    assert "Допы: Forgotten Circles, Jaws Crossover" in paragraphs
+
+
+def test_games_rich_message_keeps_entries_without_cover_photos() -> None:
+    rich_message = _build_games_rich_message(
+        title="Мои игры",
+        entries=[
+            {
+                "game": {"title": "Catan"},
                 "expansions": [],
                 "display_min_players": 2,
                 "display_max_players": 4,
             }
         ],
         offset=0,
+        game_photos=[None],
     )
-    assert "<b>Игры: @alice</b>" in text
-    assert "1. <b>Catan</b>" in text
+
+    blocks = rich_message.blocks or []
+    paragraphs = [block.text for block in blocks if isinstance(block, InputRichBlockParagraph)]
+    assert any(getattr(paragraph, "text", None) == "1. Catan" for paragraph in paragraphs)
+    assert not any(isinstance(block, InputRichBlockPhoto) for block in blocks)
+
+
+@pytest.mark.asyncio
+async def test_send_games_rich_message_edits_existing_page_as_rich_message() -> None:
+    edit_text = AsyncMock()
+    message = cast(Message, SimpleNamespace(edit_text=edit_text))
+    rich_message = InputRichMessage(html="My games")
+
+    await _send_games_rich_message(
+        message=message,
+        rich_message=rich_message,
+        edit_message=True,
+    )
+
+    edit_text.assert_awaited_once_with(
+        rich_message=rich_message,
+        reply_markup=None,
+    )

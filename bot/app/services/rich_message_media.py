@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 MAX_COVER_BYTES = 5 * 1024 * 1024
 MAX_COVER_PIXELS = 20_000_000
-COVER_SIZE = (800, 800)
+COVER_SIZE = (240, 360)
 
 
 async def load_game_cover_photos(games: list[dict]) -> list[BufferedInputFile | None]:

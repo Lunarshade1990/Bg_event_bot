@@ -11,7 +11,7 @@ from bot.app.services.rich_message_media import _load_game_cover_photo
 @pytest.mark.asyncio
 async def test_load_game_cover_photo_normalizes_valid_image() -> None:
     image_content = BytesIO()
-    Image.new("RGB", (12, 8), "white").save(image_content, format="PNG")
+    Image.new("RGB", (1200, 800), "white").save(image_content, format="PNG")
     transport = httpx.MockTransport(lambda _: httpx.Response(200, content=image_content.getvalue()))
 
     async with httpx.AsyncClient(transport=transport) as client:
@@ -23,6 +23,8 @@ async def test_load_game_cover_photo_normalizes_valid_image() -> None:
 
     assert isinstance(photo, BufferedInputFile)
     assert photo.filename == "game-cover-1.jpg"
+    with Image.open(BytesIO(photo.data)) as thumbnail:
+        assert thumbnail.size == (240, 160)
 
 
 @pytest.mark.asyncio

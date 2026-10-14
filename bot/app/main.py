@@ -4,6 +4,10 @@ import logging
 from aiogram import Bot, Dispatcher
 
 from backend.app.core.config import get_settings
+from bot.app.middlewares.ephemeral_replies import (
+    EphemeralReplyContextMiddleware,
+    ephemeral_request_middleware,
+)
 from bot.app.router import router
 
 
@@ -16,7 +20,9 @@ async def main() -> None:
     )
 
     bot = Bot(token=settings.telegram_bot_token)
+    bot.session.middleware.register(ephemeral_request_middleware)
     dispatcher = Dispatcher()
+    dispatcher.update.outer_middleware(EphemeralReplyContextMiddleware())
     dispatcher.include_router(router)
 
     await dispatcher.start_polling(bot)

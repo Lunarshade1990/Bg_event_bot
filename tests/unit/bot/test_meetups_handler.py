@@ -6,12 +6,14 @@ import pytest
 from aiogram.exceptions import TelegramAPIError
 
 from bot.app.handlers.meetups import (
+    _delete_creation_messages,
     _format_actor_display_name,
     _format_create_meetup_confirmation,
     _format_creator_participation_notification,
     _format_game_suggestion_lines,
     _format_group_meetup_card,
     _format_meetup_details,
+    _get_creation_ephemeral_message_ids,
     _get_creation_message_ids,
     _parse_chat_id,
     _parse_meetup_game_vote_callback,
@@ -446,6 +448,39 @@ def test_get_creation_message_ids_deduplicates_extra_message_ids() -> None:
     )
 
     assert message_ids == [10, 11, 12]
+
+
+def test_get_creation_ephemeral_message_ids_deduplicates_extra_ids() -> None:
+    message_ids = _get_creation_ephemeral_message_ids(
+        {"creation_ephemeral_message_ids": [20, 21, 20, "bad"]},
+        21,
+        22,
+    )
+
+    assert message_ids == [20, 21, 22]
+
+
+@pytest.mark.asyncio
+async def test_delete_creation_messages_deletes_ephemeral_messages_for_recipient() -> None:
+    bot = SimpleNamespace(
+        delete_message=AsyncMock(),
+        delete_ephemeral_message=AsyncMock(),
+    )
+
+    await _delete_creation_messages(
+        bot,
+        chat_id=-1001,
+        message_ids=[10],
+        receiver_user_id=123,
+        ephemeral_message_ids=[20],
+    )
+
+    bot.delete_message.assert_awaited_once_with(chat_id=-1001, message_id=10)
+    bot.delete_ephemeral_message.assert_awaited_once_with(
+        chat_id=-1001,
+        receiver_user_id=123,
+        ephemeral_message_id=20,
+    )
 
 
 def test_format_meetup_details_omits_empty_comment() -> None:

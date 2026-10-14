@@ -75,6 +75,7 @@ from bot.app.keyboards.meetups import (
     get_suggestion_owner_keyboard,
     get_suggestion_source_keyboard,
 )
+from bot.app.middlewares.ephemeral_replies import persistent_group_message
 from bot.app.services.backend_api import BackendAPIClient
 from bot.app.services.rich_message_media import load_game_cover_photos
 from bot.app.states.create_meetup import CreateMeetupStates
@@ -574,8 +575,24 @@ async def cancel_create_meetup(callback: CallbackQuery, state: FSMContext) -> No
         await callback.answer("Создание встречи отменено.")
         await _delete_creation_messages(
             msg.bot,
-            _get_creation_chat_id(data, msg),
-            _get_creation_message_ids(data, msg.message_id),
+            msg.chat.id,
+            _get_creation_message_ids(
+                data,
+                *(
+                    []
+                    if getattr(msg, "ephemeral_message_id", None) is not None
+                    else [msg.message_id]
+                ),
+            ),
+            receiver_user_id=callback.from_user.id,
+            ephemeral_message_ids=_get_creation_ephemeral_message_ids(
+                data,
+                *(
+                    [msg.ephemeral_message_id]
+                    if getattr(msg, "ephemeral_message_id", None) is not None
+                    else []
+                ),
+            ),
         )
         return
 
@@ -639,15 +656,16 @@ async def confirm_create_meetup(callback: CallbackQuery, state: FSMContext) -> N
             meetup,
             selected_games=selected_games,
         )
-        sent = await bot.send_rich_message(
-            chat_id=telegram_chat_id,
-            message_thread_id=telegram_thread_id,
-            rich_message=rich_message,
-            reply_markup=_build_group_keyboard_for_user(
-                meetup,
-                telegram_id=callback.from_user.id,
-            ),
-        )
+        with persistent_group_message():
+            sent = await bot.send_rich_message(
+                chat_id=telegram_chat_id,
+                message_thread_id=telegram_thread_id,
+                rich_message=rich_message,
+                reply_markup=_build_group_keyboard_for_user(
+                    meetup,
+                    telegram_id=callback.from_user.id,
+                ),
+            )
         message_id_saved = True
         try:
             await backend_client.set_meetup_telegram_message_id(
@@ -663,8 +681,24 @@ async def confirm_create_meetup(callback: CallbackQuery, state: FSMContext) -> N
 
         await _delete_creation_messages(
             msg.bot,
-            telegram_chat_id,
-            _get_creation_message_ids(data, msg.message_id),
+            msg.chat.id,
+            _get_creation_message_ids(
+                data,
+                *(
+                    []
+                    if getattr(msg, "ephemeral_message_id", None) is not None
+                    else [msg.message_id]
+                ),
+            ),
+            receiver_user_id=callback.from_user.id,
+            ephemeral_message_ids=_get_creation_ephemeral_message_ids(
+                data,
+                *(
+                    [msg.ephemeral_message_id]
+                    if getattr(msg, "ephemeral_message_id", None) is not None
+                    else []
+                ),
+            ),
         )
         if message_id_saved:
             await callback.answer("Встреча создана и опубликована в теме.")
@@ -2176,14 +2210,25 @@ async def _ensure_profile_for_user_callback(
         return None
 
 
-async def _record_creation_message(state: FSMContext, message_id: int) -> None:
+async def _record_creation_message(
+    state: FSMContext,
+    message_id: int,
+    *,
+    ephemeral_message_id: int | None = None,
+) -> None:
     data = await state.get_data()
-    message_ids = data.get("creation_message_ids")
+    key = (
+        "creation_ephemeral_message_ids"
+        if ephemeral_message_id is not None
+        else "creation_message_ids"
+    )
+    recorded_id = ephemeral_message_id if ephemeral_message_id is not None else message_id
+    message_ids = data.get(key)
     if not isinstance(message_ids, list):
         message_ids = []
-    if message_id not in message_ids:
-        message_ids.append(message_id)
-    await state.update_data(creation_message_ids=message_ids)
+    if recorded_id not in message_ids:
+        message_ids.append(recorded_id)
+    await state.update_data(**{key: message_ids})
 
 
 async def _send_creation_prompt(
@@ -2195,11 +2240,36 @@ async def _send_creation_prompt(
 ) -> None:
     data = await state.get_data()
     previous_prompt_id = data.get("creation_prompt_message_id")
+    previous_ephemeral_prompt_id = data.get("creation_prompt_ephemeral_message_id")
     prompt = await message.answer(text, parse_mode="HTML", reply_markup=reply_markup)
-    await _record_creation_message(state, prompt.message_id)
-    await state.update_data(creation_prompt_message_id=prompt.message_id)
+    await _record_creation_message(
+        state,
+        prompt.message_id,
+        ephemeral_message_id=getattr(prompt, "ephemeral_message_id", None),
+    )
+    await state.update_data(
+        creation_prompt_message_id=(
+            prompt.message_id if getattr(prompt, "ephemeral_message_id", None) is None else None
+        ),
+        creation_prompt_ephemeral_message_id=getattr(prompt, "ephemeral_message_id", None),
+    )
     if isinstance(previous_prompt_id, int) and previous_prompt_id != prompt.message_id:
-        await _delete_creation_messages(message.bot, message.chat.id, [previous_prompt_id])
+        await _delete_creation_messages(
+            message.bot,
+            message.chat.id,
+            [previous_prompt_id],
+        )
+    if isinstance(previous_ephemeral_prompt_id, int) and previous_ephemeral_prompt_id != getattr(
+        prompt, "ephemeral_message_id", None
+    ):
+        user = message.from_user
+        await _delete_creation_messages(
+            message.bot,
+            message.chat.id,
+            [],
+            receiver_user_id=user.id if user is not None else None,
+            ephemeral_message_ids=[previous_ephemeral_prompt_id],
+        )
 
 
 async def _edit_creation_prompt(
@@ -2216,17 +2286,32 @@ async def _edit_creation_prompt(
 
     msg = cast(Message, message)
     message_id = None
+    ephemeral_message_id = getattr(msg, "ephemeral_message_id", None)
     try:
-        await msg.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
-        message_id = getattr(msg, "message_id", None)
+        edited = await msg.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
+        if isinstance(edited, Message):
+            message_id = edited.message_id
+            ephemeral_message_id = (
+                getattr(edited, "ephemeral_message_id", None) or ephemeral_message_id
+            )
+        else:
+            message_id = getattr(msg, "message_id", None)
     except (TelegramBadRequest, TelegramAPIError):
         # Fallback: send a new message if editing is not allowed
         prompt = await msg.answer(text, parse_mode="HTML", reply_markup=reply_markup)
-        message_id = getattr(prompt, "message_id", None)
+        message_id = prompt.message_id
+        ephemeral_message_id = getattr(prompt, "ephemeral_message_id", None)
 
-    if message_id is not None:
-        await _record_creation_message(state, message_id)
-    await state.update_data(creation_prompt_message_id=message_id)
+    if message_id is not None or ephemeral_message_id is not None:
+        await _record_creation_message(
+            state,
+            message_id or 0,
+            ephemeral_message_id=ephemeral_message_id,
+        )
+    await state.update_data(
+        creation_prompt_message_id=(message_id if ephemeral_message_id is None else None),
+        creation_prompt_ephemeral_message_id=ephemeral_message_id,
+    )
     answer = getattr(callback, "answer", None)
     if callable(answer):
         await callback.answer()
@@ -2311,13 +2396,6 @@ def _is_group_creation(*, data: dict, message: Message) -> bool:
     return has_group_target or message.chat.type in {"group", "supergroup"}
 
 
-def _get_creation_chat_id(data: dict, message: Message) -> int:
-    telegram_chat_id = data.get("telegram_chat_id")
-    if isinstance(telegram_chat_id, int):
-        return telegram_chat_id
-    return message.chat.id
-
-
 def _get_creation_message_ids(data: dict, *extra_message_ids: int) -> list[int]:
     raw_message_ids = data.get("creation_message_ids")
     message_ids = raw_message_ids if isinstance(raw_message_ids, list) else []
@@ -2328,14 +2406,56 @@ def _get_creation_message_ids(data: dict, *extra_message_ids: int) -> list[int]:
     return result
 
 
-async def _delete_creation_messages(bot: Bot | None, chat_id: int, message_ids: list[int]) -> None:
+def _get_creation_ephemeral_message_ids(data: dict, *extra_message_ids: int) -> list[int]:
+    raw_message_ids = data.get("creation_ephemeral_message_ids")
+    message_ids = raw_message_ids if isinstance(raw_message_ids, list) else []
+    result: list[int] = []
+    for message_id in [*message_ids, *extra_message_ids]:
+        if isinstance(message_id, int) and message_id not in result:
+            result.append(message_id)
+    return result
+
+
+async def _delete_creation_messages(
+    bot: Bot | None,
+    chat_id: int,
+    message_ids: list[int],
+    *,
+    receiver_user_id: int | None = None,
+    ephemeral_message_ids: list[int] | None = None,
+) -> None:
+    ephemeral_ids = ephemeral_message_ids or []
     if bot is None:
+        if message_ids or ephemeral_ids:
+            logger.warning("Cannot delete meetup creation messages without a bot")
         return
     for message_id in message_ids:
         try:
             await bot.delete_message(chat_id=chat_id, message_id=message_id)
-        except Exception:
-            pass
+        except TelegramAPIError:
+            logger.warning(
+                "Failed to delete meetup creation message %s in chat %s",
+                message_id,
+                chat_id,
+                exc_info=True,
+            )
+    if ephemeral_ids and receiver_user_id is None:
+        raise ValueError("receiver_user_id is required to delete ephemeral messages")
+    for ephemeral_message_id in ephemeral_ids:
+        try:
+            await bot.delete_ephemeral_message(
+                chat_id=chat_id,
+                receiver_user_id=receiver_user_id,
+                ephemeral_message_id=ephemeral_message_id,
+            )
+        except TelegramAPIError:
+            logger.warning(
+                "Failed to delete ephemeral meetup creation message %s for user %s in chat %s",
+                ephemeral_message_id,
+                receiver_user_id,
+                chat_id,
+                exc_info=True,
+            )
 
 
 async def _ensure_forum_topic_thread_id(

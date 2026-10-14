@@ -224,48 +224,18 @@ def get_suggestion_games_keyboard(
     page: int,
     has_more: bool,
 ) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-    for game in games:
-        game_id = game.get("id")
-        title = game.get("title") or str(game_id)
-        prefix = "✅ " if game_id in selected_ids else ""
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=f"{prefix}{title}",
-                    callback_data=f"{MEETUP_SUGGEST_TOGGLE_CALLBACK_PREFIX}:{game_id}",
-                )
-            ]
-        )
-
-    nav_row: list[InlineKeyboardButton] = []
-    if page > 0:
-        nav_row.append(
-            InlineKeyboardButton(
-                text="<- Назад",
-                callback_data=f"{MEETUP_SUGGEST_PAGE_CALLBACK_PREFIX}:{page - 1}",
-            )
-        )
-    if has_more:
-        nav_row.append(
-            InlineKeyboardButton(
-                text="Вперед ->",
-                callback_data=f"{MEETUP_SUGGEST_PAGE_CALLBACK_PREFIX}:{page + 1}",
-            )
-        )
-    if nav_row:
-        rows.append(nav_row)
-    if selected_ids:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text="✅ Готово",
-                    callback_data=MEETUP_SUGGEST_DONE_CALLBACK,
-                )
-            ]
-        )
-    rows.append([_get_suggestion_back_button(), _get_suggestion_cancel_button()])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return get_games_list_keyboard(
+        games,
+        selected_ids,
+        page,
+        has_more,
+        callback_prefix=MEETUP_SUGGEST_TOGGLE_CALLBACK_PREFIX,
+        page_callback_prefix=MEETUP_SUGGEST_PAGE_CALLBACK_PREFIX,
+        done_callback_data=MEETUP_SUGGEST_DONE_CALLBACK,
+        include_skip=False,
+        back_callback_data=MEETUP_SUGGEST_BACK_CALLBACK,
+        cancel_callback_data=MEETUP_SUGGEST_CANCEL_CALLBACK,
+    )
 
 
 def get_create_meetup_step_keyboard(*, can_go_back: bool) -> InlineKeyboardMarkup:
@@ -396,10 +366,13 @@ def get_games_list_keyboard(
     *,
     callback_prefix: str = MEETUP_GAME_TOGGLE_CALLBACK_PREFIX,
     page_callback_prefix: str = MEETUP_GAME_PAGE_CALLBACK_PREFIX,
+    done_callback_data: str = MEETUP_GAME_DONE_CALLBACK,
+    skip_callback_data: str = MEETUP_GAME_SKIP_CALLBACK,
     show_selection: bool = True,
     include_done: bool = True,
     include_skip: bool = True,
     back_callback_data: str = MEETUP_CREATE_BACK_CALLBACK,
+    cancel_callback_data: str | None = None,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for game in games:
@@ -434,11 +407,21 @@ def get_games_list_keyboard(
         rows.append(nav_row)
 
     if selected_ids and include_done:
-        rows.append([_get_button(ButtonTypes.DONE)])
+        rows.append([InlineKeyboardButton(text="✅ Готово", callback_data=done_callback_data)])
 
     if include_skip:
-        rows.append([_get_button(ButtonTypes.SKIP)])
-    rows.append([InlineKeyboardButton(text="↩️ Назад", callback_data=back_callback_data)])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="⏩ Пропустить выбор игр",
+                    callback_data=skip_callback_data,
+                )
+            ]
+        )
+    footer_row = [InlineKeyboardButton(text="↩️ Назад", callback_data=back_callback_data)]
+    if cancel_callback_data is not None:
+        footer_row.append(InlineKeyboardButton(text="Отмена", callback_data=cancel_callback_data))
+    rows.append(footer_row)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

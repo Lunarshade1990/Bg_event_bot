@@ -17,15 +17,18 @@ from bot.app.handlers.meetups import (
     _parse_meetup_game_vote_callback,
     _show_suggestion_source_prompt,
     _start_private_chat_meetup_creation,
+    change_games_page,
     finish_suggesting_meetup_games,
     receive_meetup_date,
     skip_game_selection,
+    toggle_game_selection,
     toggle_meetup_game_vote,
 )
 from bot.app.keyboards.meetups import (
     get_group_meetup_keyboard,
     get_meetups_list_keyboard,
     get_meetups_menu_keyboard,
+    get_suggestion_games_keyboard,
     get_suggestion_owner_keyboard,
 )
 
@@ -137,6 +140,24 @@ def test_suggestion_source_keyboard_keeps_meetup_creator_first() -> None:
 
     assert keyboard.inline_keyboard[0][0].text == "@creator"
     assert keyboard.inline_keyboard[1][0].text == "@player"
+
+
+def test_suggestion_game_keyboard_keeps_suggestion_controls() -> None:
+    keyboard = get_suggestion_games_keyboard(
+        [{"id": 1, "title": "Arcs"}],
+        {1},
+        page=1,
+        has_more=True,
+    )
+    buttons = [button for row in keyboard.inline_keyboard for button in row]
+
+    assert buttons[0].text == "✅ Arcs"
+    assert buttons[0].callback_data == "meetup_suggest_toggle:1"
+    assert buttons[1].callback_data == "meetup_suggest_page:0"
+    assert buttons[2].callback_data == "meetup_suggest_page:2"
+    assert buttons[3].callback_data == "meetup_suggest_done"
+    assert buttons[-2].callback_data == "meetup_suggest_back"
+    assert buttons[-1].callback_data == "meetup_suggest_cancel"
 
 
 @pytest.mark.asyncio
@@ -678,6 +699,100 @@ async def test_skip_game_selection_moves_to_capacity() -> None:
     assert "waiting_for_capacity" in str(state.state)
     assert hasattr(message, "last_edited")
     assert "Сколько всего игроков" in message.last_edited.text
+
+
+@pytest.mark.asyncio
+async def test_toggle_game_selection_keeps_all_games_on_current_page(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "bot.app.handlers.meetups.BackendAPIClient",
+        lambda: pytest.fail("Toggling a game should use the preloaded letter map."),
+    )
+    edit_prompt = AsyncMock()
+    monkeypatch.setattr("bot.app.handlers.meetups._edit_creation_prompt", edit_prompt)
+    games = [{"id": index, "title": f"Arcs {index}", "max_players": 4} for index in range(1, 10)]
+    state = DummyState()
+    state.data = {
+        "letters_map": {"A": games},
+        "current_game_letter": "A",
+        "current_game_page": 0,
+        "available_games": {str(game["id"]): game for game in games[:8]},
+        "selected_game_ids": [],
+        "selected_games": [],
+    }
+    callback = SimpleNamespace(
+        data="meetup_game_toggle:1",
+        answer=AsyncMock(),
+    )
+
+    await toggle_game_selection(callback, state)
+
+    keyboard = edit_prompt.await_args.kwargs["reply_markup"]
+    buttons = [row[0] for row in keyboard.inline_keyboard[:8]]
+    assert [button.text for button in buttons] == [
+        "✅ Arcs 1",
+        "Arcs 2",
+        "Arcs 3",
+        "Arcs 4",
+        "Arcs 5",
+        "Arcs 6",
+        "Arcs 7",
+        "Arcs 8",
+    ]
+    assert [button.callback_data for button in buttons] == [
+        f"meetup_game_toggle:{index}" for index in range(1, 9)
+    ]
+    assert state.data["selected_game_ids"] == [1]
+    assert state.data["selected_games"] == [games[0]]
+
+    callback.data = "meetup_game_toggle:1"
+    await toggle_game_selection(callback, state)
+
+    keyboard = edit_prompt.await_args.kwargs["reply_markup"]
+    assert keyboard.inline_keyboard[0][0].text == "Arcs 1"
+    assert state.data["selected_game_ids"] == []
+    assert state.data["selected_games"] == []
+
+
+@pytest.mark.asyncio
+async def test_change_games_page_uses_preloaded_letter_map(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "bot.app.handlers.meetups.BackendAPIClient",
+        lambda: pytest.fail("Changing pages should use the preloaded letter map."),
+    )
+    edit_prompt = AsyncMock()
+    monkeypatch.setattr("bot.app.handlers.meetups._edit_creation_prompt", edit_prompt)
+    games = [{"id": index, "title": f"Arcs {index}"} for index in range(1, 11)]
+    state = DummyState()
+    state.data = {
+        "letters_map": {"A": games},
+        "current_game_letter": "A",
+        "selected_game_ids": [],
+    }
+    callback = SimpleNamespace(
+        data="meetup_game_page:1",
+        answer=AsyncMock(),
+    )
+
+    await change_games_page(callback, state)
+
+    keyboard = edit_prompt.await_args.kwargs["reply_markup"]
+    game_buttons = [
+        row[0]
+        for row in keyboard.inline_keyboard
+        if row[0].callback_data.startswith("meetup_game_toggle:")
+    ]
+    assert [button.callback_data for button in game_buttons] == [
+        "meetup_game_toggle:9",
+        "meetup_game_toggle:10",
+    ]
+    assert state.data["current_game_page"] == 1
+    navigation_buttons = [
+        button
+        for row in keyboard.inline_keyboard
+        for button in row
+        if button.callback_data.startswith("meetup_game_page:")
+    ]
+    assert [button.callback_data for button in navigation_buttons] == ["meetup_game_page:0"]
 
 
 @pytest.mark.asyncio

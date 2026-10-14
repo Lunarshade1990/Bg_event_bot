@@ -88,6 +88,7 @@ from bot.app.utils.meetup_datetime import (
 )
 
 router = Router(name="meetups")
+GAME_SELECTION_PAGE_SIZE = 8
 logger = logging.getLogger(__name__)
 
 SKIP_COMMENT_VALUES = {"-", "пропустить", "skip"}
@@ -1226,12 +1227,11 @@ async def _show_suggestion_game_page(
     data = await state.get_data()
     letter = data.get("current_proposal_letter")
     games = (data.get("proposal_letters_map") or {}).get(letter) or []
-    page_size = 8
-    start = page * page_size
+    start = page * GAME_SELECTION_PAGE_SIZE
     if not letter or page < 0 or start >= len(games):
         await callback.answer("Страница больше недоступна.", show_alert=True)
         return
-    page_games = games[start : start + page_size]
+    page_games = games[start : start + GAME_SELECTION_PAGE_SIZE]
     selected_ids = set(data.get("selected_game_ids") or [])
     await state.update_data(
         current_proposal_page=page,
@@ -1247,7 +1247,7 @@ async def _show_suggestion_game_page(
             page_games,
             selected_ids,
             page,
-            start + page_size < len(games),
+            start + GAME_SELECTION_PAGE_SIZE < len(games),
         ),
     )
     await callback.answer()
@@ -1945,42 +1945,47 @@ async def select_game_letter(callback: CallbackQuery, state: FSMContext) -> None
     data = await state.get_data()
     letters_map = data.get("letters_map") or {}
     games_for_letter = letters_map.get(letter) or []
+    if not games_for_letter:
+        await callback.answer("Для этой буквы игр нет.", show_alert=True)
+        return
 
-    # paginate locally
-    page = 0
-    page_size = 8
-    start = page * page_size
-    end = start + page_size
-    page_games = games_for_letter[start:end]
-    has_more = end < len(games_for_letter)
+    await state.update_data(current_game_letter=letter)
+    await _show_creation_game_page(callback, state, page=0)
 
-    # Save available page games info to state so toggle can access metadata
+
+async def _show_creation_game_page(
+    callback: CallbackQuery,
+    state: FSMContext,
+    *,
+    page: int,
+) -> None:
+    data = await state.get_data()
+    letter = data.get("current_game_letter")
+    games = (data.get("letters_map") or {}).get(letter) or []
+    start = page * GAME_SELECTION_PAGE_SIZE
+    if not letter or page < 0 or start >= len(games):
+        await callback.answer("Страница больше недоступна.", show_alert=True)
+        return
+
+    page_games = games[start : start + GAME_SELECTION_PAGE_SIZE]
+    selected_ids = set(data.get("selected_game_ids") or [])
     await state.update_data(
-        current_game_letter=letter,
         current_game_page=page,
         available_games={
-            str(g.get("id")): {
-                "id": g.get("id"),
-                "title": g.get("title"),
-                "bgg_id": g.get("bgg_id"),
-                "game_type": g.get("game_type"),
-                "bgg_expands_ids_cached": g.get("bgg_expands_ids_cached"),
-                "min_players": g.get("min_players"),
-                "max_players": g.get("max_players"),
-                "image_url": g.get("image_url"),
-            }
-            for g in page_games
+            str(game["id"]): game for game in page_games if game.get("id") is not None
         },
     )
     await state.set_state(CreateMeetupStates.waiting_for_game_selection)
-    current_selected = await state.get_data()
-    selected_ids = set(current_selected.get("selected_game_ids") or [])
-
     await _edit_creation_prompt(
         callback,
         state,
         f"Игры на букву {letter} (страница {page + 1}):",
-        reply_markup=get_games_list_keyboard(page_games, selected_ids, page, has_more),
+        reply_markup=get_games_list_keyboard(
+            page_games,
+            selected_ids,
+            page,
+            start + GAME_SELECTION_PAGE_SIZE < len(games),
+        ),
     )
 
 
@@ -1998,47 +2003,7 @@ async def change_games_page(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer("Сначала выбери букву.", show_alert=True)
         return
 
-    backend_client = BackendAPIClient()
-    page_size = 8
-    try:
-        games = await backend_client.list_games(
-            title=letter,
-            game_type="base",
-            limit=page_size,
-            offset=page * page_size,
-        )
-    except httpx.HTTPError:
-        await callback.answer("Не удалось загрузить список игр.", show_alert=True)
-        return
-
-    filtered = [g for g in games if (g.get("title") or "").upper().startswith(letter.upper())]
-    has_more = len(games) == page_size
-
-    await state.update_data(
-        current_game_page=page,
-        available_games={
-            str(g.get("id")): {
-                "id": g.get("id"),
-                "title": g.get("title"),
-                "bgg_id": g.get("bgg_id"),
-                "game_type": g.get("game_type"),
-                "bgg_expands_ids_cached": g.get("bgg_expands_ids_cached"),
-                "min_players": g.get("min_players"),
-                "max_players": g.get("max_players"),
-                "image_url": g.get("image_url"),
-            }
-            for g in filtered
-        },
-    )
-    current_selected = await state.get_data()
-    selected_ids = set(current_selected.get("selected_game_ids") or [])
-
-    await _edit_creation_prompt(
-        callback,
-        state,
-        f"Игры на букву {letter} (страница {page + 1}):",
-        reply_markup=get_games_list_keyboard(filtered, selected_ids, page, has_more),
-    )
+    await _show_creation_game_page(callback, state, page=page)
 
 
 @router.callback_query(F.data.startswith(f"{MEETUP_GAME_TOGGLE_CALLBACK_PREFIX}:"))
@@ -2057,48 +2022,26 @@ async def toggle_game_selection(callback: CallbackQuery, state: FSMContext) -> N
     data = await state.get_data()
     selected_ids = set(data.get("selected_game_ids") or [])
     available = data.get("available_games") or {}
+    if str(gid) not in available:
+        await callback.answer("Эта игра больше не доступна на странице.", show_alert=True)
+        return
+    selected_games = list(data.get("selected_games") or [])
 
     if gid in selected_ids:
         selected_ids.remove(gid)
+        selected_games = [game for game in selected_games if game.get("id") != gid]
     else:
         selected_ids.add(gid)
-        # store selected game minimal info
-        sel_games = data.get("selected_games") or []
-        if str(gid) in available:
-            info = available[str(gid)]
-            # avoid duplicates
-            if not any(s.get("id") == gid for s in sel_games):
-                sel_games.append(info)
-        await state.update_data(selected_games=sel_games)
+        selected_games.append(available[str(gid)])
 
-    await state.update_data(selected_game_ids=list(selected_ids))
-
-    # refresh current page keyboard
-    current_page = data.get("current_game_page") or 0
-    current_letter = data.get("current_game_letter")
-    backend_client = BackendAPIClient()
-    page_size = 8
-    try:
-        games = await backend_client.list_games(
-            title=current_letter,
-            game_type="base",
-            limit=page_size,
-            offset=current_page * page_size,
-        )
-    except httpx.HTTPError:
-        games = []
-    filtered = [
-        g
-        for g in games
-        if (g.get("title") or "").upper().startswith((current_letter or "").upper())
-    ]
-    has_more = len(games) == page_size
-
-    await _edit_creation_prompt(
+    await state.update_data(
+        selected_game_ids=list(selected_ids),
+        selected_games=selected_games,
+    )
+    await _show_creation_game_page(
         callback,
         state,
-        f"Игры на букву {current_letter} (страница {current_page + 1}):",
-        reply_markup=get_games_list_keyboard(filtered, selected_ids, current_page, has_more),
+        page=data.get("current_game_page") or 0,
     )
 
 

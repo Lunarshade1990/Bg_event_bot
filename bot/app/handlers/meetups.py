@@ -14,7 +14,8 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InputMediaPhoto,
     InputRichBlockButtons,
-    InputRichBlockDivider,
+    InputRichBlockList,
+    InputRichBlockListItem,
     InputRichBlockParagraph,
     InputRichBlockPhoto,
     InputRichBlockSectionHeading,
@@ -1702,20 +1703,31 @@ async def _build_group_meetup_rich_message(
     comment = meetup.get("comment")
     if comment:
         blocks.append(InputRichBlockParagraph(text=f"Комментарий: {comment}"))
+    blocks.append(InputRichBlockParagraph(text="\u00a0"))
 
     if games:
         blocks.append(InputRichBlockSectionHeading(text="Игры", size=4))
-        for index, game in enumerate(games):
-            blocks.append(
-                InputRichBlockParagraph(text=RichTextBold(text=str(game.get("title") or "Игра")))
+        blocks.append(
+            InputRichBlockList(
+                items=[
+                    InputRichBlockListItem(
+                        blocks=[
+                            InputRichBlockParagraph(
+                                text=RichTextBold(text=str(game.get("title") or "Игра"))
+                            )
+                        ]
+                    )
+                    for game in games
+                ]
             )
-            if index < len(games) - 1:
-                blocks.append(InputRichBlockDivider())
+        )
+        blocks.append(InputRichBlockParagraph(text="\u00a0"))
 
     suggestion_lines = _get_game_suggestion_text_lines(meetup.get("game_suggestions") or [])
     if suggestion_lines:
         blocks.append(InputRichBlockSectionHeading(text="Предложения игроков", size=4))
         blocks.extend(InputRichBlockParagraph(text=line) for line in suggestion_lines)
+        blocks.append(InputRichBlockParagraph(text="\u00a0"))
         vote_summaries = {
             summary["game_id"]: summary for summary in meetup.get("game_suggestion_votes", [])
         }
@@ -1746,6 +1758,7 @@ async def _build_group_meetup_rich_message(
             ]
             vote_line = f"✅ За: {', '.join(voter_names)}" if voter_names else "Пока без голосов"
             blocks.append(InputRichBlockParagraph(text=vote_line))
+        blocks.append(InputRichBlockParagraph(text="\u00a0"))
 
     blocks.append(InputRichBlockSectionHeading(text="Участники", size=4))
     participant_lines = [
@@ -1757,6 +1770,7 @@ async def _build_group_meetup_rich_message(
     if not participant_lines:
         participant_lines.append("• пока нет участников")
     blocks.append(InputRichBlockParagraph(text="\n".join(participant_lines)))
+    blocks.append(InputRichBlockParagraph(text="\u00a0"))
     return InputRichMessage(blocks=blocks)
 
 

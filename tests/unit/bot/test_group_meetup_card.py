@@ -7,8 +7,11 @@ from aiogram import Bot
 from aiogram.types import (
     BufferedInputFile,
     InputRichBlockButtons,
+    InputRichBlockDivider,
+    InputRichBlockList,
     InputRichBlockParagraph,
     InputRichBlockPhoto,
+    InputRichBlockSectionHeading,
     InputRichBlockSlideshow,
 )
 
@@ -75,20 +78,36 @@ async def test_group_meetup_rich_card_places_cover_slideshow_at_the_beginning(
     )
 
     blocks = rich_message.blocks or []
-    game_title_positions = [
-        index
-        for index, block in enumerate(blocks)
-        if isinstance(block, InputRichBlockParagraph)
-        and getattr(block.text, "text", None) in {"Catan", "Carcassonne", "Wingspan"}
+    game_list_positions = [
+        index for index, block in enumerate(blocks) if isinstance(block, InputRichBlockList)
     ]
     slideshow_positions = [
         index for index, block in enumerate(blocks) if isinstance(block, InputRichBlockSlideshow)
     ]
 
+    assert len(game_list_positions) == 1
+    game_list_position = game_list_positions[0]
+    game_list = blocks[game_list_position]
+    assert isinstance(game_list, InputRichBlockList)
     assert [
-        getattr(getattr(blocks[index], "text", None), "text", None)
-        for index in game_title_positions
+        getattr(item.blocks[0].text, "text", None)
+        for item in game_list.items
+        if isinstance(item.blocks[0], InputRichBlockParagraph)
     ] == ["Catan", "Carcassonne", "Wingspan"]
+    assert not any(isinstance(block, InputRichBlockDivider) for block in blocks)
+    assert isinstance(blocks[game_list_position + 1], InputRichBlockParagraph)
+    assert blocks[game_list_position + 1].text == "\u00a0"
+    assert isinstance(blocks[game_list_position + 2], InputRichBlockSectionHeading)
+    assert blocks[game_list_position + 2].text == "Участники"
+    assert isinstance(blocks[-1], InputRichBlockParagraph)
+    assert blocks[-1].text == "\u00a0"
+    games_heading_index = next(
+        index
+        for index, block in enumerate(blocks)
+        if isinstance(block, InputRichBlockSectionHeading) and block.text == "Игры"
+    )
+    assert isinstance(blocks[games_heading_index - 1], InputRichBlockParagraph)
+    assert blocks[games_heading_index - 1].text == "\u00a0"
     assert len(slideshow_positions) == 1
     assert slideshow_positions[0] == 0
     slideshow = blocks[slideshow_positions[0]]
@@ -119,10 +138,12 @@ async def test_group_meetup_rich_card_keeps_game_title_when_cover_missing(
     )
 
     blocks = rich_message.blocks or []
-    assert any(
-        isinstance(block, InputRichBlockParagraph) and getattr(block.text, "text", None) == "Catan"
-        for block in blocks
-    )
+    game_list = next(block for block in blocks if isinstance(block, InputRichBlockList))
+    assert [
+        getattr(item.blocks[0].text, "text", None)
+        for item in game_list.items
+        if isinstance(item.blocks[0], InputRichBlockParagraph)
+    ] == ["Catan"]
     assert not any(isinstance(block, InputRichBlockSlideshow) for block in blocks)
 
 
@@ -182,6 +203,15 @@ async def test_group_meetup_rich_card_adds_one_vote_button_per_game_and_shows_vo
         isinstance(block, InputRichBlockParagraph) and block.text == "✅ За: @alice, Bob"
         for block in blocks
     )
+    for section in ("Предложения игроков", "Голосование", "Участники"):
+        heading_index = next(
+            index
+            for index, block in enumerate(blocks)
+            if isinstance(block, InputRichBlockSectionHeading) and block.text == section
+        )
+        spacer = blocks[heading_index - 1]
+        assert isinstance(spacer, InputRichBlockParagraph)
+        assert spacer.text == "\u00a0"
 
 
 @pytest.mark.asyncio

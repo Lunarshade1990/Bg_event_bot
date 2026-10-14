@@ -203,6 +203,107 @@ def test_meetup_suggestion_replaces_previous_games_for_proposer(
     assert [game["id"] for game in suggestions[0]["games"]] == [games[2].id]
 
 
+def test_nonparticipant_can_toggle_votes_for_suggested_games(
+    client: TestClient,
+    db_session,
+    api_headers: dict[str, str],
+) -> None:
+    creator = make_user(db_session, telegram_id=20120, display_name="Creator")
+    voter = make_user(
+        db_session, telegram_id=20121, display_name="Outside player", username="outside"
+    )
+    games = [
+        Game(
+            bgg_id=20120 + index,
+            title=f"Vote game {index}",
+            min_players=1,
+            max_players=4,
+            game_type=GameType.BASE,
+            campaign_source=CampaignSource.UNKNOWN,
+        )
+        for index in range(2)
+    ]
+    db_session.add_all(games)
+    db_session.flush()
+    db_session.add_all(
+        UserGame(
+            user_id=creator.id,
+            game_id=game.id,
+            source=OwnershipSource.BGG_IMPORT,
+        )
+        for game in games
+    )
+    db_session.commit()
+    meetup = make_meetup(db_session, creator)
+
+    suggestion_response = client.post(
+        f"/api/meetups/{meetup.id}/suggestions",
+        headers=api_headers,
+        json={
+            "proposer_user_id": creator.id,
+            "collection_owner_user_id": creator.id,
+            "game_ids": [games[0].id],
+        },
+    )
+    assert suggestion_response.status_code == 200
+
+    vote_url = f"/api/meetups/{meetup.id}/game-votes"
+    vote_payload = {"user_id": voter.id, "game_id": games[0].id}
+    added_vote = client.post(vote_url, headers=api_headers, json=vote_payload)
+    assert added_vote.status_code == 200
+    vote_summary = added_vote.json()["game_suggestion_votes"]
+    assert vote_summary == [
+        {
+            "game_id": games[0].id,
+            "voters": [
+                {
+                    "user_id": voter.id,
+                    "display_name": "Outside player",
+                    "username": "outside",
+                }
+            ],
+        }
+    ]
+    assert len(added_vote.json()["participants"]) == 1
+
+    removed_vote = client.post(vote_url, headers=api_headers, json=vote_payload)
+    assert removed_vote.status_code == 200
+    assert removed_vote.json()["game_suggestion_votes"][0]["voters"] == []
+
+    client.post(vote_url, headers=api_headers, json=vote_payload)
+    replaced_suggestion = client.post(
+        f"/api/meetups/{meetup.id}/suggestions",
+        headers=api_headers,
+        json={
+            "proposer_user_id": creator.id,
+            "collection_owner_user_id": creator.id,
+            "game_ids": [games[1].id],
+        },
+    )
+    assert replaced_suggestion.status_code == 200
+    assert replaced_suggestion.json()["game_suggestion_votes"] == [
+        {"game_id": games[1].id, "voters": []}
+    ]
+
+    invalid_vote = client.post(
+        vote_url,
+        headers=api_headers,
+        json={"user_id": voter.id, "game_id": games[0].id},
+    )
+    assert invalid_vote.status_code == 400
+    assert invalid_vote.json()["detail"] == "The game has not been suggested for this meetup."
+
+    meetup.status = MeetupStatus.COMPLETED
+    db_session.commit()
+    closed_vote = client.post(
+        vote_url,
+        headers=api_headers,
+        json={"user_id": voter.id, "game_id": games[1].id},
+    )
+    assert closed_vote.status_code == 400
+    assert closed_vote.json()["detail"] == "Meetup is not open for voting."
+
+
 def test_meetup_suggestion_rejects_games_outside_selected_collection(
     client: TestClient,
     db_session,

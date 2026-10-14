@@ -14,11 +14,13 @@ from bot.app.handlers.meetups import (
     _format_meetup_details,
     _get_creation_message_ids,
     _parse_chat_id,
+    _parse_meetup_game_vote_callback,
     _show_suggestion_source_prompt,
     _start_private_chat_meetup_creation,
     finish_suggesting_meetup_games,
     receive_meetup_date,
     skip_game_selection,
+    toggle_meetup_game_vote,
 )
 from bot.app.keyboards.meetups import (
     get_group_meetup_keyboard,
@@ -60,6 +62,69 @@ def test_group_meetup_keyboard_includes_game_suggestion_action() -> None:
 
     assert keyboard.inline_keyboard[-1][0].text == "🎲 Предложить игру"
     assert keyboard.inline_keyboard[-1][0].callback_data == "meetup_suggest:42"
+
+
+def test_meetup_game_vote_callback_parser_validates_both_ids() -> None:
+    assert _parse_meetup_game_vote_callback("meetup_game_vote:42:7") == (42, 7)
+    assert _parse_meetup_game_vote_callback("meetup_game_vote:0:7") is None
+    assert _parse_meetup_game_vote_callback("meetup_game_vote:42:nope") is None
+    assert _parse_meetup_game_vote_callback("meetup_game_vote:42:7:extra") is None
+
+
+@pytest.mark.asyncio
+async def test_meetup_game_vote_callback_saves_vote_and_refreshes_card(monkeypatch) -> None:
+    class VotingBackend(FakeBackendAPIClient):
+        async def get_meetup(self, meetup_id: int):
+            assert meetup_id == 42
+            return {
+                "telegram_chat_id": -1001,
+                "telegram_message_id": 111,
+            }
+
+        async def toggle_meetup_game_vote(
+            self,
+            meetup_id: int,
+            *,
+            user_id: int,
+            game_id: int,
+        ):
+            assert (meetup_id, user_id, game_id) == (42, 1, 7)
+            return {
+                "game_suggestion_votes": [
+                    {"game_id": 7, "voters": [{"user_id": 1}]},
+                ],
+            }
+
+    monkeypatch.setattr("bot.app.handlers.meetups.BackendAPIClient", VotingBackend)
+    monkeypatch.setattr("bot.app.handlers.meetups.Message", SimpleNamespace)
+    refresh_card = AsyncMock()
+    monkeypatch.setattr(
+        "bot.app.handlers.meetups._refresh_group_meetup_card",
+        refresh_card,
+    )
+    message = SimpleNamespace(
+        chat=SimpleNamespace(type="supergroup", id=-1001),
+        message_id=111,
+        photo=[],
+    )
+    callback = SimpleNamespace(
+        data="meetup_game_vote:42:7",
+        message=message,
+        bot=SimpleNamespace(),
+        from_user=SimpleNamespace(
+            id=100,
+            username="voter",
+            first_name="Voter",
+            last_name=None,
+        ),
+        answer=AsyncMock(),
+    )
+    await toggle_meetup_game_vote(callback)
+    refresh_card.assert_awaited_once()
+    refreshed_meetup = refresh_card.await_args.args[1]
+    assert refreshed_meetup["game_suggestion_votes"][0]["voters"] == [{"user_id": 1}]
+    assert refresh_card.await_args.kwargs["has_photo"] is False
+    callback.answer.assert_awaited_once_with("Голос учтён.")
 
 
 def test_suggestion_source_keyboard_keeps_meetup_creator_first() -> None:

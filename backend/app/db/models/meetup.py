@@ -22,6 +22,7 @@ from backend.app.db.models.enums import MeetupStatus, enum_values
 if TYPE_CHECKING:
     from backend.app.db.models.meetup_game import MeetupGame
     from backend.app.db.models.meetup_game_suggestion import MeetupGameSuggestion
+    from backend.app.db.models.meetup_game_vote import MeetupGameVote
     from backend.app.db.models.meetup_participant import MeetupParticipant
     from backend.app.db.models.user import User
 
@@ -56,6 +57,10 @@ class Meetup(TimestampMixin, Base):
         cascade="all, delete-orphan",
     )
     game_suggestions: Mapped[list[MeetupGameSuggestion]] = relationship(
+        back_populates="meetup",
+        cascade="all, delete-orphan",
+    )
+    game_votes: Mapped[list[MeetupGameVote]] = relationship(
         back_populates="meetup",
         cascade="all, delete-orphan",
     )

@@ -8,6 +8,8 @@ from backend.app.db.repositories import users as user_repository
 from backend.app.schemas.meetup import (
     MeetupCreateRequest,
     MeetupGameSuggestionRead,
+    MeetupGameVoterRead,
+    MeetupGameVoteSummaryRead,
     MeetupParticipantRead,
     MeetupProposalSourceRead,
     MeetupRead,
@@ -36,6 +38,10 @@ class MeetupAlreadyJoinedError(ValueError):
 
 class MeetupSuggestionNotAllowedError(ValueError):
     """Raised when a suggestion is outside the meetup or collection rules."""
+
+
+class MeetupVoteNotAllowedError(ValueError):
+    """Raised when a vote is outside the meetup's open game suggestions."""
 
 
 def _build_meetup_read(meetup: Meetup) -> MeetupRead:
@@ -96,6 +102,27 @@ def _build_meetup_read(meetup: Meetup) -> MeetupRead:
             suggestions_by_proposer[proposer.id] = grouped
         grouped.games.append(suggestion.game)
 
+    votes_by_game: dict[int, MeetupGameVoteSummaryRead] = {}
+    for suggestion in sorted(meetup.game_suggestions, key=lambda entry: entry.id):
+        game = suggestion.game
+        if game is not None:
+            votes_by_game.setdefault(
+                game.id,
+                MeetupGameVoteSummaryRead(game_id=game.id),
+            )
+    for vote in meetup.game_votes:
+        summary = votes_by_game.get(vote.game_id)
+        if summary is not None:
+            summary.voters.append(
+                MeetupGameVoterRead(
+                    user_id=vote.user.id,
+                    display_name=vote.user.display_name,
+                    username=vote.user.username,
+                )
+            )
+    for summary in votes_by_game.values():
+        summary.voters.sort(key=lambda voter: (voter.display_name.casefold(), voter.user_id))
+
     return MeetupRead(
         id=meetup.id,
         scheduled_at=meetup.scheduled_at,
@@ -110,6 +137,7 @@ def _build_meetup_read(meetup: Meetup) -> MeetupRead:
         games=games,
         proposal_sources=proposal_sources,
         game_suggestions=list(suggestions_by_proposer.values()),
+        game_suggestion_votes=list(votes_by_game.values()),
     )
 
 
@@ -257,6 +285,35 @@ def suggest_meetup_games(
         proposer_user_id=proposer_user_id,
         collection_owner_user_id=collection_owner_user_id,
         game_ids=unique_game_ids,
+    )
+    refreshed = meetup_repository.get_meetup_by_id(db, meetup_id)
+    if refreshed is None:
+        raise MeetupNotFoundError("Meetup not found.")
+    return _build_meetup_read(refreshed)
+
+
+def toggle_meetup_game_vote(
+    db: Session,
+    *,
+    meetup_id: int,
+    user_id: int,
+    game_id: int,
+) -> MeetupRead:
+    meetup = meetup_repository.get_meetup_for_update(db, meetup_id)
+    if meetup is None:
+        raise MeetupNotFoundError("Meetup not found.")
+    if meetup.status != MeetupStatus.PLANNED:
+        raise MeetupVoteNotAllowedError("Meetup is not open for voting.")
+    if not meetup_repository.has_suggested_game(db, meetup_id=meetup_id, game_id=game_id):
+        raise MeetupVoteNotAllowedError("The game has not been suggested for this meetup.")
+    if user_repository.get_user_by_id(db, user_id) is None:
+        raise MeetupNotFoundError("User not found.")
+
+    meetup_repository.toggle_game_vote(
+        db,
+        meetup_id=meetup_id,
+        game_id=game_id,
+        user_id=user_id,
     )
     refreshed = meetup_repository.get_meetup_by_id(db, meetup_id)
     if refreshed is None:

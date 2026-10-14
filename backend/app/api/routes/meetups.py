@@ -6,6 +6,7 @@ from backend.app.schemas.meetup import (
     MeetupCreateRequest,
     MeetupDeleteRequest,
     MeetupGameSuggestionRequest,
+    MeetupGameVoteRequest,
     MeetupJoinRequest,
     MeetupLeaveRequest,
     MeetupRead,
@@ -151,6 +152,25 @@ def suggest_games(
     except meetup_service.MeetupNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except meetup_service.MeetupSuggestionNotAllowedError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/{meetup_id}/game-votes", response_model=MeetupRead)
+def toggle_game_vote(
+    meetup_id: int,
+    payload: MeetupGameVoteRequest,
+    db: Session = Depends(get_db),
+) -> MeetupRead:
+    try:
+        return meetup_service.toggle_meetup_game_vote(
+            db,
+            meetup_id=meetup_id,
+            user_id=payload.user_id,
+            game_id=payload.game_id,
+        )
+    except meetup_service.MeetupNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except meetup_service.MeetupVoteNotAllowedError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 

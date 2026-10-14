@@ -30,6 +30,11 @@ class MeetupGameSuggestionRequest(BaseModel):
     game_ids: list[int] = Field(..., min_length=1)
 
 
+class MeetupGameVoteRequest(BaseModel):
+    user_id: int = Field(..., ge=1)
+    game_id: int = Field(..., ge=1)
+
+
 class MeetupTelegramMessageRequest(BaseModel):
     telegram_message_id: int = Field(..., ge=1)
 
@@ -60,6 +65,17 @@ class MeetupGameSuggestionRead(BaseModel):
     games: list[GameRead]
 
 
+class MeetupGameVoterRead(BaseModel):
+    user_id: int
+    display_name: str
+    username: str | None
+
+
+class MeetupGameVoteSummaryRead(BaseModel):
+    game_id: int
+    voters: list[MeetupGameVoterRead] = Field(default_factory=list)
+
+
 class MeetupRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -76,3 +92,4 @@ class MeetupRead(BaseModel):
     games: list[GameRead] = Field(default_factory=list)
     proposal_sources: list[MeetupProposalSourceRead] = Field(default_factory=list)
     game_suggestions: list[MeetupGameSuggestionRead] = Field(default_factory=list)
+    game_suggestion_votes: list[MeetupGameVoteSummaryRead] = Field(default_factory=list)

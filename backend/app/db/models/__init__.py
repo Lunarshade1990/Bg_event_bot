@@ -5,6 +5,7 @@ from backend.app.db.models.game_randomizer_option import GameRandomizerOption
 from backend.app.db.models.meetup import Meetup
 from backend.app.db.models.meetup_game import MeetupGame
 from backend.app.db.models.meetup_game_suggestion import MeetupGameSuggestion
+from backend.app.db.models.meetup_game_vote import MeetupGameVote
 from backend.app.db.models.meetup_participant import MeetupParticipant
 from backend.app.db.models.telegram_chat_member import TelegramChatMember
 from backend.app.db.models.telegram_chat_topic import TelegramChatTopic
@@ -19,6 +20,7 @@ __all__ = [
     "Meetup",
     "MeetupGame",
     "MeetupGameSuggestion",
+    "MeetupGameVote",
     "MeetupParticipant",
     "TelegramChatMember",
     "TelegramChatTopic",

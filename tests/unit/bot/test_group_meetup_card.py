@@ -6,6 +6,7 @@ import pytest
 from aiogram import Bot
 from aiogram.types import (
     BufferedInputFile,
+    InputRichBlockButtons,
     InputRichBlockParagraph,
     InputRichBlockPhoto,
     InputRichBlockSlideshow,
@@ -123,6 +124,64 @@ async def test_group_meetup_rich_card_keeps_game_title_when_cover_missing(
         for block in blocks
     )
     assert not any(isinstance(block, InputRichBlockSlideshow) for block in blocks)
+
+
+@pytest.mark.asyncio
+async def test_group_meetup_rich_card_adds_one_vote_button_per_game_and_shows_voters(
+    monkeypatch,
+) -> None:
+    async def load_photos(games: list[dict]) -> list[None]:
+        return [None for _ in games]
+
+    monkeypatch.setattr(
+        "bot.app.handlers.meetups.load_game_cover_photos",
+        load_photos,
+    )
+
+    rich_message = await _build_group_meetup_rich_message(
+        {
+            "id": 42,
+            "scheduled_at": "2026-06-15T19:30:00+00:00",
+            "capacity_total": 4,
+            "participants": [],
+            "game_suggestions": [
+                {
+                    "username": "alice",
+                    "display_name": "Alice",
+                    "games": [{"id": 7, "title": "Catan"}],
+                },
+                {
+                    "username": None,
+                    "display_name": "Bob",
+                    "games": [{"id": 7, "title": "Catan"}],
+                },
+            ],
+            "game_suggestion_votes": [
+                {
+                    "game_id": 7,
+                    "voters": [
+                        {"user_id": 1, "username": "alice", "display_name": "Alice"},
+                        {"user_id": 2, "username": None, "display_name": "Bob"},
+                    ],
+                }
+            ],
+        }
+    )
+
+    blocks = rich_message.blocks or []
+    buttons = [
+        button
+        for block in blocks
+        if isinstance(block, InputRichBlockButtons)
+        for button in block.buttons
+    ]
+    assert len(buttons) == 1
+    assert buttons[0].text == "Catan"
+    assert buttons[0].callback_data == "meetup_game_vote:42:7"
+    assert any(
+        isinstance(block, InputRichBlockParagraph) and block.text == "✅ За: @alice, Bob"
+        for block in blocks
+    )
 
 
 @pytest.mark.asyncio

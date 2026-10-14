@@ -399,6 +399,22 @@ class BackendAPIClient:
             response.raise_for_status()
             return response.json()
 
+    async def toggle_meetup_game_vote(
+        self,
+        meetup_id: int,
+        *,
+        user_id: int,
+        game_id: int,
+    ) -> dict:
+        payload = {"user_id": user_id, "game_id": game_id}
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.post(
+                f"/api/meetups/{meetup_id}/game-votes",
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def set_meetup_telegram_message_id(
         self, meetup_id: int, *, telegram_message_id: int
     ) -> dict:

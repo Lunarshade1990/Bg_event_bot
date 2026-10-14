@@ -7,6 +7,7 @@ from backend.app.db.models.enums import MeetupStatus, ParticipantStatus
 from backend.app.db.models.meetup import Meetup
 from backend.app.db.models.meetup_game import MeetupGame
 from backend.app.db.models.meetup_game_suggestion import MeetupGameSuggestion
+from backend.app.db.models.meetup_game_vote import MeetupGameVote
 from backend.app.db.models.meetup_participant import MeetupParticipant
 from backend.app.db.models.user import User
 from backend.app.db.models.user_game import UserGame
@@ -23,6 +24,7 @@ def _meetup_load_options():
         selectinload(Meetup.meetup_games).selectinload(MeetupGame.game),
         selectinload(Meetup.game_suggestions).selectinload(MeetupGameSuggestion.proposer),
         selectinload(Meetup.game_suggestions).selectinload(MeetupGameSuggestion.game),
+        selectinload(Meetup.game_votes).selectinload(MeetupGameVote.user),
     )
 
 
@@ -85,6 +87,10 @@ def get_meetup_by_id(db: Session, meetup_id: int, *, load_participants: bool = T
     if load_participants:
         stmt = stmt.options(*_meetup_load_options())
     return db.scalar(stmt)
+
+
+def get_meetup_for_update(db: Session, meetup_id: int) -> Meetup | None:
+    return db.scalar(select(Meetup).where(Meetup.id == meetup_id).with_for_update())
 
 
 def list_meetups(
@@ -192,6 +198,7 @@ def replace_game_suggestions(
     collection_owner_user_id: int,
     game_ids: list[int],
 ) -> None:
+    db.scalar(select(Meetup.id).where(Meetup.id == meetup_id).with_for_update())
     db.query(MeetupGameSuggestion).filter(
         MeetupGameSuggestion.meetup_id == meetup_id,
         MeetupGameSuggestion.proposer_user_id == proposer_user_id,
@@ -205,7 +212,52 @@ def replace_game_suggestions(
         )
         for game_id in game_ids
     )
+    db.flush()
+    remaining_game_ids = select(MeetupGameSuggestion.game_id).where(
+        MeetupGameSuggestion.meetup_id == meetup_id
+    )
+    db.query(MeetupGameVote).filter(
+        MeetupGameVote.meetup_id == meetup_id,
+        ~MeetupGameVote.game_id.in_(remaining_game_ids),
+    ).delete(synchronize_session=False)
     db.commit()
+
+
+def has_suggested_game(db: Session, *, meetup_id: int, game_id: int) -> bool:
+    stmt = (
+        select(MeetupGameSuggestion.id)
+        .where(
+            MeetupGameSuggestion.meetup_id == meetup_id,
+            MeetupGameSuggestion.game_id == game_id,
+        )
+        .limit(1)
+    )
+    return db.scalar(stmt) is not None
+
+
+def toggle_game_vote(
+    db: Session,
+    *,
+    meetup_id: int,
+    game_id: int,
+    user_id: int,
+) -> bool:
+    db.scalar(select(Meetup.id).where(Meetup.id == meetup_id).with_for_update())
+    existing = db.scalar(
+        select(MeetupGameVote).where(
+            MeetupGameVote.meetup_id == meetup_id,
+            MeetupGameVote.game_id == game_id,
+            MeetupGameVote.user_id == user_id,
+        )
+    )
+    if existing is None:
+        db.add(MeetupGameVote(meetup_id=meetup_id, game_id=game_id, user_id=user_id))
+        voted = True
+    else:
+        db.delete(existing)
+        voted = False
+    db.commit()
+    return voted
 
 
 def delete_meetup(db: Session, meetup: Meetup) -> None:

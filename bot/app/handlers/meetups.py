@@ -13,6 +13,7 @@ from aiogram.types import (
     ChatMemberUpdated,
     InlineKeyboardMarkup,
     InputMediaPhoto,
+    InputRichBlockButtons,
     InputRichBlockDivider,
     InputRichBlockParagraph,
     InputRichBlockPhoto,
@@ -20,6 +21,7 @@ from aiogram.types import (
     InputRichBlockSlideshow,
     InputRichMessage,
     Message,
+    RichMessageButton,
     RichTextBold,
 )
 
@@ -40,6 +42,7 @@ from bot.app.keyboards.meetups import (
     MEETUP_GAME_PAGE_CALLBACK_PREFIX,
     MEETUP_GAME_SKIP_CALLBACK,
     MEETUP_GAME_TOGGLE_CALLBACK_PREFIX,
+    MEETUP_GAME_VOTE_CALLBACK_PREFIX,
     MEETUP_JOIN_CALLBACK_PREFIX,
     MEETUP_LEAVE_CALLBACK_PREFIX,
     MEETUP_LIST_CALLBACK_PREFIX,
@@ -801,6 +804,86 @@ async def leave_meetup(callback: CallbackQuery) -> None:
     )
     await callback.answer("Участие отменено.")
     await _render_meetup_details(callback, meetup_id)
+
+
+@router.callback_query(F.data.startswith(f"{MEETUP_GAME_VOTE_CALLBACK_PREFIX}:"))
+async def toggle_meetup_game_vote(callback: CallbackQuery) -> None:
+    parsed_data = _parse_meetup_game_vote_callback(callback.data)
+    message = callback.message
+    if parsed_data is None or not isinstance(message, Message):
+        await callback.answer("Некорректный голос или карточка встречи.", show_alert=True)
+        return
+    meetup_id, game_id = parsed_data
+
+    backend_client = BackendAPIClient()
+    profile = await _ensure_profile_for_user_callback(callback, backend_client=backend_client)
+    if profile is None:
+        return
+
+    try:
+        current_meetup = await backend_client.get_meetup(meetup_id)
+    except httpx.HTTPStatusError as exc:
+        await callback.answer(_extract_error_detail(exc), show_alert=True)
+        return
+    except httpx.HTTPError:
+        await callback.answer("Не удалось загрузить встречу.", show_alert=True)
+        return
+
+    if (
+        message.chat.type not in {"group", "supergroup"}
+        or current_meetup.get("telegram_chat_id") != message.chat.id
+        or current_meetup.get("telegram_message_id") != message.message_id
+    ):
+        await callback.answer(
+            "Голосовать можно только в актуальной карточке встречи.",
+            show_alert=True,
+        )
+        return
+
+    try:
+        meetup = await backend_client.toggle_meetup_game_vote(
+            meetup_id,
+            user_id=profile["id"],
+            game_id=game_id,
+        )
+    except httpx.HTTPStatusError as exc:
+        await callback.answer(_extract_error_detail(exc), show_alert=True)
+        return
+    except httpx.HTTPError:
+        await callback.answer("Не удалось сохранить голос.", show_alert=True)
+        return
+
+    try:
+        await _refresh_group_meetup_card(
+            callback.bot,
+            meetup,
+            telegram_id=callback.from_user.id,
+            has_photo=bool(message.photo),
+        )
+    except TelegramAPIError:
+        logger.exception(
+            "Saved vote for game %s in meetup %s but failed to refresh its card",
+            game_id,
+            meetup_id,
+        )
+        await callback.answer(
+            "Голос сохранён, но карточку встречи не удалось обновить.",
+            show_alert=True,
+        )
+        return
+
+    vote_summary = next(
+        (
+            summary
+            for summary in meetup.get("game_suggestion_votes", [])
+            if summary.get("game_id") == game_id
+        ),
+        {},
+    )
+    has_voted = any(
+        voter.get("user_id") == profile["id"] for voter in vote_summary.get("voters", [])
+    )
+    await callback.answer("Голос учтён." if has_voted else "Ваш голос снят.")
 
 
 @router.callback_query(F.data.startswith(f"{MEETUP_SUGGEST_CALLBACK_PREFIX}:"))
@@ -1633,6 +1716,36 @@ async def _build_group_meetup_rich_message(
     if suggestion_lines:
         blocks.append(InputRichBlockSectionHeading(text="Предложения игроков", size=4))
         blocks.extend(InputRichBlockParagraph(text=line) for line in suggestion_lines)
+        vote_summaries = {
+            summary["game_id"]: summary for summary in meetup.get("game_suggestion_votes", [])
+        }
+        suggested_games: dict[int, dict] = {}
+        for suggestion in meetup.get("game_suggestions") or []:
+            for game in suggestion.get("games", []):
+                if game.get("id") is not None:
+                    suggested_games.setdefault(game["id"], game)
+        blocks.append(InputRichBlockSectionHeading(text="Голосование", size=4))
+        for game_id, game in suggested_games.items():
+            title = str(game.get("title") or "Игра")
+            blocks.append(
+                InputRichBlockButtons(
+                    buttons=[
+                        RichMessageButton(
+                            text=title,
+                            callback_data=f"{MEETUP_GAME_VOTE_CALLBACK_PREFIX}:{meetup['id']}:{game_id}",
+                        )
+                    ]
+                )
+            )
+            voters = vote_summaries.get(game_id, {}).get("voters", [])
+            voter_names = [
+                f"@{voter['username']}"
+                if voter.get("username")
+                else voter.get("display_name") or "Участник"
+                for voter in voters
+            ]
+            vote_line = f"✅ За: {', '.join(voter_names)}" if voter_names else "Пока без голосов"
+            blocks.append(InputRichBlockParagraph(text=vote_line))
 
     blocks.append(InputRichBlockSectionHeading(text="Участники", size=4))
     participant_lines = [
@@ -2561,6 +2674,20 @@ def _parse_meetup_id(callback_data: str | None, prefix: str) -> int | None:
     if not raw_value.isdigit():
         return None
     return int(raw_value)
+
+
+def _parse_meetup_game_vote_callback(callback_data: str | None) -> tuple[int, int] | None:
+    if callback_data is None:
+        return None
+    parts = callback_data.split(":")
+    if len(parts) != 3 or parts[0] != MEETUP_GAME_VOTE_CALLBACK_PREFIX:
+        return None
+    if not parts[1].isdigit() or not parts[2].isdigit():
+        return None
+    meetup_id, game_id = int(parts[1]), int(parts[2])
+    if meetup_id < 1 or game_id < 1:
+        return None
+    return meetup_id, game_id
 
 
 def _extract_error_detail(exc: httpx.HTTPStatusError) -> str:

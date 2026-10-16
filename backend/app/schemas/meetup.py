@@ -10,10 +10,20 @@ class MeetupCreateRequest(BaseModel):
     creator_user_id: int = Field(..., ge=1)
     scheduled_at: datetime
     capacity_total: int = Field(..., ge=1)
+    title: str | None = Field(default=None, max_length=255)
     comment: str | None = Field(default=None, max_length=4000)
     telegram_chat_id: int | None = Field(default=None)
     telegram_thread_id: int | None = Field(default=None)
     game_ids: list[int] = Field(default_factory=list)
+
+
+class MeetupUpdateRequest(BaseModel):
+    requesting_user_id: int = Field(..., ge=1)
+    scheduled_at: datetime | None = None
+    capacity_total: int | None = Field(default=None, ge=1)
+    title: str | None = Field(default=None, max_length=255)
+    comment: str | None = Field(default=None, max_length=4000)
+    game_ids: list[int] | None = None
 
 
 class MeetupJoinRequest(BaseModel):
@@ -82,6 +92,7 @@ class MeetupRead(BaseModel):
     id: int
     scheduled_at: datetime
     capacity_total: int
+    title: str | None
     comment: str | None
     status: MeetupStatus
     creator_user_id: int

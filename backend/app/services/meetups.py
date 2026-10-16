@@ -13,6 +13,7 @@ from backend.app.schemas.meetup import (
     MeetupParticipantRead,
     MeetupProposalSourceRead,
     MeetupRead,
+    MeetupUpdateRequest,
 )
 
 
@@ -26,6 +27,10 @@ class MeetupForbiddenError(ValueError):
 
 class MeetupCapacityFullError(ValueError):
     """Raised when a meetup has no free participant slots."""
+
+
+class MeetupInvalidUpdateError(ValueError):
+    """Raised when a meetup update violates its current constraints."""
 
 
 class MeetupNotJoinableError(ValueError):
@@ -151,10 +156,10 @@ def create_meetup(db: Session, payload: MeetupCreateRequest) -> MeetupRead:
         creator_user_id=payload.creator_user_id,
         scheduled_at=payload.scheduled_at,
         capacity_total=payload.capacity_total,
+        title=payload.title,
         comment=payload.comment,
         telegram_chat_id=payload.telegram_chat_id,
         telegram_thread_id=payload.telegram_thread_id,
-        title=None,
         location="",
         game_ids=payload.game_ids,
     )
@@ -184,6 +189,51 @@ def list_meetups(
         offset=offset,
     )
     return [_build_meetup_read(meetup) for meetup in meetups]
+
+
+def update_meetup(
+    db: Session,
+    meetup_id: int,
+    payload: MeetupUpdateRequest,
+) -> MeetupRead:
+    meetup = meetup_repository.get_meetup_for_update(db, meetup_id)
+    if meetup is None:
+        raise MeetupNotFoundError("Meetup not found.")
+    if meetup.creator_user_id != payload.requesting_user_id:
+        raise MeetupForbiddenError("Only the meetup creator can edit it.")
+
+    fields = payload.model_dump(
+        exclude_unset=True,
+        exclude={"requesting_user_id", "game_ids"},
+    )
+    if any(
+        fields.get(field) is None
+        for field in ("scheduled_at", "capacity_total")
+        if field in fields
+    ):
+        raise MeetupInvalidUpdateError("Date and capacity cannot be cleared.")
+
+    game_ids = payload.game_ids
+    if game_ids is not None:
+        unique_game_ids = list(dict.fromkeys(game_ids))
+        if any(game_repository.get_game_by_id(db, game_id) is None for game_id in unique_game_ids):
+            raise MeetupInvalidUpdateError("One or more selected games do not exist.")
+        game_ids = unique_game_ids
+
+    if "capacity_total" in fields:
+        joined_count = meetup_repository.count_joined_participants(db, meetup_id)
+        if fields["capacity_total"] < joined_count:
+            raise MeetupInvalidUpdateError(
+                "Capacity cannot be lower than the number of joined participants."
+            )
+
+    updated = meetup_repository.update_meetup(
+        db,
+        meetup,
+        fields=fields,
+        game_ids=game_ids,
+    )
+    return _build_meetup_read(updated)
 
 
 def join_meetup(db: Session, meetup_id: int, user_id: int) -> MeetupRead:

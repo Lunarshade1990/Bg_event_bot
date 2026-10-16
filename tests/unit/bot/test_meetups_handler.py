@@ -17,6 +17,7 @@ from bot.app.handlers.meetups import (
     _get_creation_message_ids,
     _parse_chat_id,
     _parse_meetup_game_vote_callback,
+    _send_meetups_list,
     _show_suggestion_source_prompt,
     _start_private_chat_meetup_creation,
     change_games_page,
@@ -28,6 +29,8 @@ from bot.app.handlers.meetups import (
 )
 from bot.app.keyboards.meetups import (
     get_group_meetup_keyboard,
+    get_meetup_detail_keyboard,
+    get_meetup_edit_keyboard,
     get_meetups_list_keyboard,
     get_meetups_menu_keyboard,
     get_suggestion_games_keyboard,
@@ -42,6 +45,22 @@ def test_meetups_menu_has_separate_upcoming_and_archive_buttons() -> None:
     assert "Запланированные встречи" in labels
     assert "Архив встреч" in labels
     assert "Список встреч" not in labels
+
+
+def test_meetups_menu_shows_created_meetups_only_when_available() -> None:
+    hidden_labels = {
+        button.text
+        for row in get_meetups_menu_keyboard().keyboard
+        for button in row
+    }
+    visible_labels = {
+        button.text
+        for row in get_meetups_menu_keyboard(show_created=True).keyboard
+        for button in row
+    }
+
+    assert "Созданные мной" not in hidden_labels
+    assert "Созданные мной" in visible_labels
 
 
 def test_meetups_list_keyboard_switches_category_and_preserves_item_context() -> None:
@@ -60,6 +79,84 @@ def test_meetups_list_keyboard_switches_category_and_preserves_item_context() ->
     assert upcoming_keyboard.inline_keyboard[0][0].callback_data == "meetup:42:upcoming"
     assert upcoming_keyboard.inline_keyboard[-1][0].callback_data == "meetup_list:archive"
     assert archive_keyboard.inline_keyboard[-1][0].callback_data == "meetup_list:upcoming"
+
+
+def test_creator_can_edit_and_delete_meetup_from_its_detail_card() -> None:
+    meetup = {"id": 42, "creator_user_id": 7}
+
+    creator_keyboard = get_meetup_detail_keyboard(
+        meetup,
+        current_user_id=7,
+        can_join=False,
+    )
+    other_keyboard = get_meetup_detail_keyboard(
+        meetup,
+        current_user_id=8,
+        can_join=False,
+    )
+    creator_actions = {
+        button.text: button.callback_data
+        for row in creator_keyboard.inline_keyboard
+        for button in row
+    }
+    other_actions = {
+        button.text
+        for row in other_keyboard.inline_keyboard
+        for button in row
+    }
+
+    assert creator_actions["Редактировать"] == "meetup_edit:42:upcoming"
+    assert creator_actions["Удалить"] == "meetup_delete:42"
+    assert "Редактировать" not in other_actions
+    assert "Удалить" not in other_actions
+
+
+def test_meetup_edit_menu_has_all_requested_fields() -> None:
+    keyboard = get_meetup_edit_keyboard(42)
+    labels = [row[0].text for row in keyboard.inline_keyboard]
+
+    assert labels == [
+        "Название",
+        "Дата и время",
+        "Список игр",
+        "Количество игроков",
+        "Комментарий",
+        "Назад к встрече",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_created_meetups_list_keeps_archive_and_upcoming_context(monkeypatch) -> None:
+    class MeetupListBackend(FakeBackendAPIClient):
+        async def list_meetups(self, *, archive: bool, limit: int, offset: int):
+            if offset:
+                return []
+            return [
+                {
+                    "id": 42 if archive else 43,
+                    "creator_user_id": 1,
+                    "scheduled_at": (
+                        "2026-06-01T18:00:00+00:00"
+                        if archive
+                        else "2027-06-01T18:00:00+00:00"
+                    ),
+                    "capacity_total": 4,
+                    "participants": [],
+                }
+            ]
+
+    monkeypatch.setattr("bot.app.handlers.meetups.BackendAPIClient", MeetupListBackend)
+    message = DummyMessage()
+
+    await _send_meetups_list(message, mine=True)
+
+    assert message.last_answer.text.startswith("Созданные мной:")
+    assert message.last_answer.reply_markup.inline_keyboard[0][0].callback_data == (
+        "meetup:43:upcoming"
+    )
+    assert message.last_answer.reply_markup.inline_keyboard[1][0].callback_data == (
+        "meetup:42:archive"
+    )
 
 
 def test_group_meetup_keyboard_includes_game_suggestion_action() -> None:
@@ -399,6 +496,20 @@ def test_format_meetup_details_escapes_user_content() -> None:
     assert "Играем в _Catan_ и *Azul* &lt;test&gt;" in text
     assert "Anna & Co" not in text
     assert "Anna &amp; Co" in text
+
+
+def test_format_meetup_details_uses_escaped_meetup_title() -> None:
+    text = _format_meetup_details(
+        {
+            "id": 1,
+            "title": "Game night <Friday>",
+            "scheduled_at": "2026-06-15T19:30:00+00:00",
+            "capacity_total": 4,
+            "participants": [],
+        }
+    )
+
+    assert text.startswith("<b>Game night &lt;Friday&gt; в понедельник в 19:30</b>")
 
 
 def test_format_create_meetup_confirmation_escapes_comment() -> None:
@@ -855,9 +966,9 @@ async def test_receive_meetup_date_builds_letters(monkeypatch) -> None:
 
 
 def test_format_actor_display_name_prefers_username() -> None:
-    assert _format_actor_display_name({"username": "boardgamer", "display_name": "Board Gamer"}) == (
-        "@boardgamer"
-    )
+    assert _format_actor_display_name(
+        {"username": "boardgamer", "display_name": "Board Gamer"}
+    ) == "@boardgamer"
 
 
 def test_format_actor_display_name_escapes_display_name() -> None:

@@ -93,6 +93,36 @@ def get_meetup_for_update(db: Session, meetup_id: int) -> Meetup | None:
     return db.scalar(select(Meetup).where(Meetup.id == meetup_id).with_for_update())
 
 
+def update_meetup(
+    db: Session,
+    meetup: Meetup,
+    *,
+    fields: dict,
+    game_ids: list[int] | None = None,
+) -> Meetup:
+    for field, value in fields.items():
+        setattr(meetup, field, value)
+
+    if game_ids is not None:
+        db.query(MeetupGame).filter(MeetupGame.meetup_id == meetup.id).delete(
+            synchronize_session=False
+        )
+        db.add_all(
+            MeetupGame(
+                meetup_id=meetup.id,
+                game_id=game_id,
+                added_by_user_id=meetup.creator_user_id,
+            )
+            for game_id in dict.fromkeys(game_ids)
+        )
+
+    db.commit()
+    loaded = get_meetup_by_id(db, meetup.id)
+    if loaded is None:
+        raise RuntimeError("Meetup was updated but could not be loaded.")
+    return loaded
+
+
 def list_meetups(
     db: Session,
     *,

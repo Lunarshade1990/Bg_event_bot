@@ -10,3 +10,7 @@ class CreateMeetupStates(StatesGroup):
     waiting_for_capacity = State()
     waiting_for_comment = State()
     waiting_for_confirmation = State()
+
+
+class MeetupEditStates(StatesGroup):
+    waiting_for_value = State()

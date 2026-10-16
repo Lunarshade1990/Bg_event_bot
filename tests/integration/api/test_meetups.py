@@ -84,6 +84,95 @@ def test_create_meetup_persists_game_ids_in_response(
     assert payload["games"][0]["title"] == "Catan"
 
 
+def test_update_meetup_changes_fields_and_replaces_selected_games(
+    client: TestClient,
+    db_session,
+    api_headers: dict[str, str],
+) -> None:
+    creator = make_user(db_session, telegram_id=20010, display_name="Creator")
+    participant = make_user(db_session, telegram_id=20011, display_name="Participant")
+    games = [
+        Game(
+            bgg_id=1010 + index,
+            title=f"Game {index}",
+            author="Test Author",
+            min_players=1,
+            max_players=4,
+            game_type=GameType.BASE,
+            has_campaign=False,
+            campaign_source=CampaignSource.UNKNOWN,
+        )
+        for index in range(2)
+    ]
+    db_session.add_all(games)
+    db_session.commit()
+    meetup = make_meetup(
+        db_session,
+        creator,
+        scheduled_at=datetime(2027, 1, 1, 18, 0, tzinfo=UTC),
+    )
+    client.post(
+        f"/api/meetups/{meetup.id}/join",
+        headers=api_headers,
+        json={"user_id": participant.id},
+    )
+
+    response = client.patch(
+        f"/api/meetups/{meetup.id}",
+        headers=api_headers,
+        json={
+            "requesting_user_id": creator.id,
+            "title": "Game night",
+            "scheduled_at": "2027-02-01T19:30:00+00:00",
+            "capacity_total": 2,
+            "comment": "Bring snacks",
+            "game_ids": [games[0].id, games[1].id, games[1].id],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["title"] == "Game night"
+    assert payload["scheduled_at"].startswith("2027-02-01T19:30:00")
+    assert payload["capacity_total"] == 2
+    assert payload["comment"] == "Bring snacks"
+    assert {game["id"] for game in payload["games"]} == {game.id for game in games}
+
+
+def test_update_meetup_rejects_non_creator_and_capacity_below_joined_count(
+    client: TestClient,
+    db_session,
+    api_headers: dict[str, str],
+) -> None:
+    creator = make_user(db_session, telegram_id=20012, display_name="Owner")
+    stranger = make_user(db_session, telegram_id=20013, display_name="Stranger")
+    participant = make_user(db_session, telegram_id=20014, display_name="Participant")
+    meetup = make_meetup(
+        db_session,
+        creator,
+        scheduled_at=datetime(2027, 1, 1, 18, 0, tzinfo=UTC),
+    )
+    client.post(
+        f"/api/meetups/{meetup.id}/join",
+        headers=api_headers,
+        json={"user_id": participant.id},
+    )
+
+    forbidden_response = client.patch(
+        f"/api/meetups/{meetup.id}",
+        headers=api_headers,
+        json={"requesting_user_id": stranger.id, "title": "Not allowed"},
+    )
+    capacity_response = client.patch(
+        f"/api/meetups/{meetup.id}",
+        headers=api_headers,
+        json={"requesting_user_id": creator.id, "capacity_total": 1},
+    )
+
+    assert forbidden_response.status_code == 403
+    assert capacity_response.status_code == 400
+
+
 def test_meetup_proposal_sources_put_creator_first_and_include_joined_collectors(
     client: TestClient,
     db_session,

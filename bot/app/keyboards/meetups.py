@@ -27,6 +27,8 @@ MEETUP_SUGGEST_BACK_CALLBACK = "meetup_suggest_back"
 MEETUP_SUGGEST_CANCEL_CALLBACK = "meetup_suggest_cancel"
 MEETUP_DELETE_CALLBACK_PREFIX = "meetup_delete"
 MEETUP_DELETE_CONFIRM_CALLBACK_PREFIX = "meetup_delete_confirm"
+MEETUP_EDIT_CALLBACK_PREFIX = "meetup_edit"
+MEETUP_EDIT_FIELD_CALLBACK_PREFIX = "meetup_edit_field"
 MEETUP_CREATE_CONFIRM_CALLBACK = "meetup_create:confirm"
 MEETUP_CREATE_BACK_CALLBACK = "meetup_create:back"
 MEETUP_CREATE_CANCEL_CALLBACK = "meetup_create:cancel"
@@ -40,14 +42,21 @@ MEETUP_GAME_DONE_CALLBACK = "meetup_game_done"
 MEETUP_GAME_SKIP_CALLBACK = "meetup_game_skip"
 
 
-def get_meetups_menu_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Создать встречу")],
-            [KeyboardButton(text="Запланированные встречи")],
+def get_meetups_menu_keyboard(*, show_created: bool = False) -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text="Создать встречу")],
+        [KeyboardButton(text="Запланированные встречи")],
+    ]
+    if show_created:
+        keyboard.append([KeyboardButton(text="Созданные мной")])
+    keyboard.extend(
+        [
             [KeyboardButton(text="Архив встреч")],
             [KeyboardButton(text="Назад")],
-        ],
+        ]
+    )
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
         resize_keyboard=True,
     )
 
@@ -56,19 +65,25 @@ def get_meetups_list_keyboard(
     meetups: list[dict],
     *,
     archive: bool = False,
+    mine: bool = False,
 ) -> InlineKeyboardMarkup:
     category = "archive" if archive else "upcoming"
     rows = [
         [
             InlineKeyboardButton(
                 text=_format_meetup_button_label(meetup),
-                callback_data=f"{MEETUP_CALLBACK_PREFIX}:{meetup['id']}:{category}",
+                callback_data=(
+                    f"{MEETUP_CALLBACK_PREFIX}:{meetup['id']}:"
+                    f"{'archive' if meetup.get('_archive', False) else 'upcoming'}"
+                    if mine
+                    else f"{MEETUP_CALLBACK_PREFIX}:{meetup['id']}:{category}"
+                ),
             )
         ]
         for meetup in meetups
     ]
-    target_category = "upcoming" if archive else "archive"
-    target_label = "Запланированные встречи" if archive else "Архив встреч"
+    target_category = "upcoming" if archive or mine else "archive"
+    target_label = "Запланированные встречи" if archive or mine else "Архив встреч"
     rows.append(
         [
             InlineKeyboardButton(
@@ -103,6 +118,17 @@ def get_meetup_detail_keyboard(
         rows.append(
             [
                 InlineKeyboardButton(
+                    text="Редактировать",
+                    callback_data=(
+                        f"{MEETUP_EDIT_CALLBACK_PREFIX}:{meetup['id']}:"
+                        f"{'archive' if archive else 'upcoming'}"
+                    ),
+                )
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
                     text="Удалить",
                     callback_data=f"{MEETUP_DELETE_CALLBACK_PREFIX}:{meetup['id']}",
                 )
@@ -122,6 +148,66 @@ def get_meetup_detail_keyboard(
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_meetup_edit_keyboard(
+    meetup_id: int,
+    *,
+    archive: bool = False,
+) -> InlineKeyboardMarkup:
+    fields = [
+        ("Название", "title"),
+        ("Дата и время", "scheduled_at"),
+        ("Список игр", "games"),
+        ("Количество игроков", "capacity_total"),
+        ("Комментарий", "comment"),
+    ]
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=label,
+                callback_data=(
+                    f"{MEETUP_EDIT_FIELD_CALLBACK_PREFIX}:{meetup_id}:{field}:"
+                    f"{'archive' if archive else 'upcoming'}"
+                ),
+            )
+        ]
+        for label, field in fields
+    ]
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="Назад к встрече",
+                callback_data=(
+                    f"{MEETUP_CALLBACK_PREFIX}:{meetup_id}:archive"
+                    if archive
+                    else f"{MEETUP_CALLBACK_PREFIX}:{meetup_id}:upcoming"
+                ),
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_meetup_edit_prompt_keyboard(
+    meetup_id: int,
+    *,
+    archive: bool = False,
+) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Отмена",
+                    callback_data=(
+                        f"{MEETUP_EDIT_CALLBACK_PREFIX}:{meetup_id}:archive"
+                        if archive
+                        else f"{MEETUP_EDIT_CALLBACK_PREFIX}:{meetup_id}:upcoming"
+                    ),
+                )
+            ]
+        ]
+    )
 
 
 def get_group_meetup_keyboard(
@@ -446,7 +532,13 @@ def _format_meetup_button_label(meetup: dict) -> str:
     date_label = format_meetup_datetime(meetup["scheduled_at"])
     joined_count = len(meetup.get("participants", []))
     capacity = meetup["capacity_total"]
-    return f"{date_label} ({joined_count}/{capacity})"
+    title = (meetup.get("title") or "").strip()
+    label = f"{title}: {date_label}" if title else date_label
+    suffix = f" ({joined_count}/{capacity})"
+    max_label_length = 60 - len(suffix)
+    if len(label) > max_label_length:
+        label = f"{label[: max_label_length - 3]}..."
+    return f"{label}{suffix}"
 
 
 def _format_proposal_source_label(source: dict) -> str:

@@ -11,6 +11,7 @@ from backend.app.schemas.meetup import (
     MeetupLeaveRequest,
     MeetupRead,
     MeetupTelegramMessageRequest,
+    MeetupUpdateRequest,
 )
 from backend.app.schemas.telegram_chat_topic import (
     TelegramChatMembershipCreateRequest,
@@ -103,6 +104,22 @@ def get_meetup(meetup_id: int, db: Session = Depends(get_db)) -> MeetupRead:
     if meetup is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meetup not found.")
     return meetup
+
+
+@router.patch("/{meetup_id}", response_model=MeetupRead)
+def update_meetup(
+    meetup_id: int,
+    payload: MeetupUpdateRequest,
+    db: Session = Depends(get_db),
+) -> MeetupRead:
+    try:
+        return meetup_service.update_meetup(db, meetup_id, payload)
+    except meetup_service.MeetupNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except meetup_service.MeetupForbiddenError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except meetup_service.MeetupInvalidUpdateError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.post("/{meetup_id}/join", response_model=MeetupRead)

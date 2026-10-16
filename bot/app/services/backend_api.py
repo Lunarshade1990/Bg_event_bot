@@ -364,6 +364,19 @@ class BackendAPIClient:
             response.raise_for_status()
             return response.json()
 
+    async def update_meetup(
+        self,
+        meetup_id: int,
+        *,
+        requesting_user_id: int,
+        fields: dict[str, str | int | list[int] | None],
+    ) -> dict:
+        payload = {"requesting_user_id": requesting_user_id, **fields}
+        async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:
+            response = await client.patch(f"/api/meetups/{meetup_id}", json=payload)
+            response.raise_for_status()
+            return response.json()
+
     async def join_meetup(self, meetup_id: int, *, user_id: int) -> dict:
         payload = {"user_id": user_id}
         async with httpx.AsyncClient(base_url=self._base_url, headers=self._headers) as client:

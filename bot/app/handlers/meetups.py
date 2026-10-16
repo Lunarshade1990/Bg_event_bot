@@ -37,6 +37,8 @@ from bot.app.keyboards.meetups import (
     MEETUP_CREATE_SKIP_COMMENT_CALLBACK,
     MEETUP_DELETE_CALLBACK_PREFIX,
     MEETUP_DELETE_CONFIRM_CALLBACK_PREFIX,
+    MEETUP_EDIT_CALLBACK_PREFIX,
+    MEETUP_EDIT_FIELD_CALLBACK_PREFIX,
     MEETUP_GAME_DONE_CALLBACK,
     MEETUP_GAME_GROUP_CALLBACK_PREFIX,
     MEETUP_GAME_LETTER_CALLBACK_PREFIX,
@@ -67,6 +69,8 @@ from bot.app.keyboards.meetups import (
     get_meetup_chat_selection_keyboard,
     get_meetup_delete_confirm_keyboard,
     get_meetup_detail_keyboard,
+    get_meetup_edit_keyboard,
+    get_meetup_edit_prompt_keyboard,
     get_meetups_list_keyboard,
     get_meetups_menu_keyboard,
     get_suggestion_games_keyboard,
@@ -78,7 +82,7 @@ from bot.app.keyboards.meetups import (
 from bot.app.middlewares.ephemeral_replies import persistent_group_message
 from bot.app.services.backend_api import BackendAPIClient
 from bot.app.services.rich_message_media import load_game_cover_photos
-from bot.app.states.create_meetup import CreateMeetupStates
+from bot.app.states.create_meetup import CreateMeetupStates, MeetupEditStates
 from bot.app.states.propose_meetup_game import ProposeMeetupGameStates
 from bot.app.utils.game_player_counts import calculate_max_for_all_selected_games
 from bot.app.utils.meetup_datetime import (
@@ -101,7 +105,44 @@ _topic_thread_cache: dict[int, int] = {}
 @router.message(F.text == "Встречи")
 async def open_meetups_menu(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Раздел встреч:", reply_markup=get_meetups_menu_keyboard())
+    user = message.from_user
+    if user is None:
+        await message.answer(
+            "Не удалось определить пользователя Telegram.",
+            reply_markup=get_meetups_menu_keyboard(),
+        )
+        return
+    backend_client = BackendAPIClient()
+    try:
+        profile = await backend_client.get_user_by_telegram_id(user.id)
+        meetups: list[dict] = []
+        if profile is not None:
+            for archive in (False, True):
+                offset = 0
+                while True:
+                    batch = await backend_client.list_meetups(
+                        archive=archive,
+                        limit=100,
+                        offset=offset,
+                    )
+                    meetups.extend(batch)
+                    if len(batch) < 100:
+                        break
+                    offset += 100
+    except httpx.HTTPError:
+        await message.answer(
+            "Не удалось проверить созданные встречи. Раздел встреч:",
+            reply_markup=get_meetups_menu_keyboard(),
+        )
+        return
+
+    has_created_meetups = profile is not None and any(
+        meetup.get("creator_user_id") == profile["id"] for meetup in meetups
+    )
+    await message.answer(
+        "Раздел встреч:",
+        reply_markup=get_meetups_menu_keyboard(show_created=has_created_meetups),
+    )
 
 
 @router.message(Command("meetup"))
@@ -430,6 +471,7 @@ async def receive_meetup_confirmation_text(message: Message, state: FSMContext) 
 async def back_create_meetup(callback: CallbackQuery, state: FSMContext) -> None:
     current_state = await state.get_state()
     data = await state.get_data()
+    is_editing = isinstance(data.get("editing_meetup_id"), int)
 
     if current_state == CreateMeetupStates.waiting_for_game_selection.state:
         # Go back to letter selection from game list
@@ -475,6 +517,9 @@ async def back_create_meetup(callback: CallbackQuery, state: FSMContext) -> None
         return
 
     if current_state == CreateMeetupStates.waiting_for_game_group.state:
+        if is_editing:
+            await _return_to_meetup_edit_menu(callback, state)
+            return
         # Go back to date selection
         await state.update_data(selected_games=None, selected_game_ids=None)
         await state.set_state(CreateMeetupStates.waiting_for_date)
@@ -494,6 +539,9 @@ async def back_create_meetup(callback: CallbackQuery, state: FSMContext) -> None
             # show groups
             await state.set_state(CreateMeetupStates.waiting_for_game_group)
             await _show_dynamic_letter_groups(callback, state)
+            return
+        if is_editing:
+            await _return_to_meetup_edit_menu(callback, state)
             return
         # No groups -> go back to date
         await state.update_data(selected_games=None, selected_game_ids=None)
@@ -563,6 +611,14 @@ async def back_create_meetup(callback: CallbackQuery, state: FSMContext) -> None
 @router.callback_query(F.data == MEETUP_CREATE_CANCEL_CALLBACK)
 async def cancel_create_meetup(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
+    if isinstance(data.get("editing_meetup_id"), int):
+        await _return_to_meetup_edit_menu(
+            callback,
+            state,
+            answer_text="Редактирование отменено.",
+        )
+        return
+
     message = callback.message
     await state.clear()
 
@@ -727,6 +783,14 @@ async def list_meetups(message: Message) -> None:
     await _send_meetups_list(message, archive=False)
 
 
+@router.message(F.text == "Созданные мной")
+async def list_my_meetups(message: Message) -> None:
+    if not await _ensure_profile(message):
+        return
+
+    await _send_meetups_list(message, mine=True)
+
+
 @router.message(F.text == "Архив встреч")
 async def list_archived_meetups(message: Message) -> None:
     if not await _ensure_profile(message):
@@ -743,8 +807,15 @@ async def list_meetups_callback(callback: CallbackQuery) -> None:
         await callback.answer("Не удалось обновить список.", show_alert=True)
         return
 
-    archive = (callback.data or "").endswith(":archive")
-    await _send_meetups_list(cast(Message, message), archive=archive, edit_message=True)
+    callback_data = callback.data or ""
+    archive = callback_data.endswith(":archive")
+    mine = callback_data.endswith(":mine")
+    await _send_meetups_list(
+        cast(Message, message),
+        archive=archive,
+        mine=mine,
+        edit_message=True,
+    )
     answer = getattr(callback, "answer", None)
     if callable(answer):
         await callback.answer()
@@ -1447,6 +1518,205 @@ async def cancel_suggesting_meetup_games(callback: CallbackQuery, state: FSMCont
     await callback.answer("Предложение отменено.")
 
 
+@router.callback_query(F.data.startswith(f"{MEETUP_EDIT_CALLBACK_PREFIX}:"))
+async def open_meetup_edit_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    parts = (callback.data or "").split(":")
+    if (
+        len(parts) not in {2, 3}
+        or not parts[1].isdigit()
+        or (len(parts) == 3 and parts[2] not in {"upcoming", "archive"})
+    ):
+        await callback.answer("Некорректная встреча.", show_alert=True)
+        return
+    meetup_id = int(parts[1])
+    archive = len(parts) == 3 and parts[2] == "archive"
+    message = callback.message
+    if not isinstance(message, Message):
+        await callback.answer("Некорректная встреча.", show_alert=True)
+        return
+
+    backend_client = BackendAPIClient()
+    profile = await _ensure_profile_for_user_callback(callback, backend_client=backend_client)
+    if profile is None:
+        return
+    try:
+        meetup = await backend_client.get_meetup(meetup_id)
+    except httpx.HTTPStatusError as exc:
+        await callback.answer(_extract_error_detail(exc), show_alert=True)
+        return
+    except httpx.HTTPError:
+        await callback.answer("Не удалось загрузить встречу.", show_alert=True)
+        return
+
+    if meetup.get("creator_user_id") != profile["id"]:
+        await callback.answer("Редактировать встречу может только её создатель.", show_alert=True)
+        return
+
+    await state.clear()
+    await state.update_data(
+        editing_meetup_id=meetup_id,
+        edit_owner_user_id=profile["id"],
+        edit_telegram_user_id=callback.from_user.id,
+        edit_card_chat_id=message.chat.id,
+        edit_card_message_id=message.message_id,
+        edit_archive=archive,
+    )
+    await message.edit_text(
+        "Что изменить?",
+        reply_markup=get_meetup_edit_keyboard(meetup_id, archive=archive),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(f"{MEETUP_EDIT_FIELD_CALLBACK_PREFIX}:"))
+async def select_meetup_edit_field(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    parts = (callback.data or "").split(":")
+    if (
+        len(parts) not in {3, 4}
+        or not parts[1].isdigit()
+        or (len(parts) == 4 and parts[3] not in {"upcoming", "archive"})
+    ):
+        await callback.answer("Некорректный раздел встречи.", show_alert=True)
+        return
+    meetup_id = int(parts[1])
+    field = parts[2]
+    if field not in {"title", "scheduled_at", "games", "capacity_total", "comment"}:
+        await callback.answer("Неизвестный раздел встречи.", show_alert=True)
+        return
+
+    backend_client = BackendAPIClient()
+    profile = await _ensure_profile_for_user_callback(callback, backend_client=backend_client)
+    if profile is None:
+        return
+    try:
+        meetup = await backend_client.get_meetup(meetup_id)
+    except httpx.HTTPStatusError as exc:
+        await callback.answer(_extract_error_detail(exc), show_alert=True)
+        return
+    except httpx.HTTPError:
+        await callback.answer("Не удалось загрузить встречу.", show_alert=True)
+        return
+    if meetup.get("creator_user_id") != profile["id"]:
+        await callback.answer("Редактировать встречу может только её создатель.", show_alert=True)
+        return
+
+    message = callback.message
+    if not isinstance(message, Message):
+        await callback.answer("Не удалось открыть редактирование.", show_alert=True)
+        return
+    current_data = await state.get_data()
+    edit_archive = (
+        parts[3] == "archive"
+        if len(parts) == 4
+        else bool(current_data.get("edit_archive", False))
+    )
+    await state.update_data(
+        editing_meetup_id=meetup_id,
+        edit_owner_user_id=profile["id"],
+        edit_telegram_user_id=callback.from_user.id,
+        edit_card_chat_id=message.chat.id,
+        edit_card_message_id=message.message_id,
+        edit_archive=edit_archive,
+    )
+
+    if field == "games":
+        games = meetup.get("games") or []
+        await state.update_data(
+            selected_game_ids=[game["id"] for game in games if game.get("id") is not None],
+            selected_games=games,
+            letters_map={},
+            letter_groups=None,
+            current_game_letter=None,
+        )
+        await state.set_state(CreateMeetupStates.waiting_for_game_group)
+        await _show_dynamic_letter_groups(callback, state)
+        return
+
+    prompts = {
+        "title": (
+            "Введи новое название встречи (до 255 символов; "
+            "отправь «-», чтобы убрать название)."
+        ),
+        "scheduled_at": (
+            f"Введи новую дату и время, например <code>{MEETUP_DATETIME_EXAMPLE}</code> (UTC)."
+        ),
+        "capacity_total": "Введи новое общее количество игроков (целое число от 1).",
+        "comment": "Введи новый комментарий или отправь «-», чтобы убрать его.",
+    }
+    await state.update_data(edit_field=field)
+    await state.set_state(MeetupEditStates.waiting_for_value)
+    await message.answer(
+        prompts[field],
+        parse_mode="HTML",
+        reply_markup=get_meetup_edit_prompt_keyboard(
+            meetup_id,
+            archive=edit_archive,
+        ),
+    )
+    await callback.answer()
+
+
+@router.message(MeetupEditStates.waiting_for_value)
+async def receive_meetup_edit_value(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    meetup_id = data.get("editing_meetup_id")
+    field = data.get("edit_field")
+    raw_value = (message.text or "").strip()
+    if not isinstance(meetup_id, int) or field not in {
+        "title",
+        "scheduled_at",
+        "capacity_total",
+        "comment",
+    }:
+        await state.clear()
+        await message.answer("Данные редактирования потерялись. Открой встречу заново.")
+        return
+
+    if field == "title":
+        if raw_value == "-":
+            value = None
+        elif not raw_value:
+            await message.answer("Название не может быть пустым. Отправь «-», чтобы убрать его.")
+            return
+        elif len(raw_value) > 255:
+            await message.answer("Название должно быть не длиннее 255 символов.")
+            return
+        else:
+            value = raw_value
+    elif field == "scheduled_at":
+        value = parse_meetup_datetime(raw_value)
+        if value is None:
+            await message.answer(
+                f"Не удалось разобрать дату. Пример: <code>{MEETUP_DATETIME_EXAMPLE}</code>",
+                parse_mode="HTML",
+            )
+            return
+        if not is_future_meetup_datetime(value):
+            await message.answer("Дата и время встречи должны быть в будущем.")
+            return
+        value = value.isoformat()
+    elif field == "capacity_total":
+        if not raw_value.isdigit() or int(raw_value) < 1:
+            await message.answer("Количество игроков должно быть целым числом не меньше 1.")
+            return
+        value = int(raw_value)
+    else:
+        value = None if raw_value.lower() in {"", "-", "пропустить", "skip"} else raw_value
+        if value is not None and len(value) > 4000:
+            await message.answer("Комментарий должен быть не длиннее 4000 символов.")
+            return
+
+    await _save_meetup_edit(
+        state,
+        message=message,
+        callback=None,
+        fields={field: value},
+    )
+
+
 @router.callback_query(F.data.startswith(f"{MEETUP_DELETE_CALLBACK_PREFIX}:"))
 async def confirm_delete_meetup(callback: CallbackQuery) -> None:
     meetup_id = _parse_meetup_id(callback.data, MEETUP_DELETE_CALLBACK_PREFIX)
@@ -1527,23 +1797,50 @@ async def _send_meetups_list(
     message: Message,
     *,
     archive: bool = False,
+    mine: bool = False,
     edit_message: bool = False,
 ) -> None:
     backend_client = BackendAPIClient()
+    if mine and message.from_user is None:
+        text = "Не удалось определить пользователя Telegram."
+        if edit_message:
+            await message.edit_text(text)
+        else:
+            await message.answer(text)
+        return
     try:
+        profile = None
+        if mine:
+            user = message.from_user
+            assert user is not None
+            profile = await backend_client.get_user_by_telegram_id(user.id)
+            if profile is None:
+                text = "Сначала нажми /start."
+                if edit_message:
+                    await message.edit_text(text)
+                else:
+                    await message.answer(text)
+                return
+
         meetups: list[dict] = []
         limit = 100
-        offset = 0
-        while True:
-            batch = await backend_client.list_meetups(
-                archive=archive,
-                limit=limit,
-                offset=offset,
-            )
-            meetups.extend(batch)
-            if len(batch) < limit:
-                break
-            offset += limit
+        list_archives = (False, True) if mine else (archive,)
+        for list_archive in list_archives:
+            offset = 0
+            while True:
+                batch = await backend_client.list_meetups(
+                    archive=list_archive,
+                    limit=limit,
+                    offset=offset,
+                )
+                meetups.extend(
+                    [{**meetup, "_archive": list_archive} for meetup in batch]
+                    if mine
+                    else batch
+                )
+                if len(batch) < limit:
+                    break
+                offset += limit
     except httpx.HTTPError:
         text = "Не удалось загрузить список встреч."
         if edit_message:
@@ -1552,13 +1849,23 @@ async def _send_meetups_list(
             await message.answer(text, reply_markup=get_meetups_menu_keyboard())
         return
 
-    title = "Архив встреч" if archive else "Запланированные встречи"
+    if mine and profile is not None:
+        meetups = [
+            meetup for meetup in meetups if meetup.get("creator_user_id") == profile["id"]
+        ]
+    title = "Созданные мной" if mine else "Архив встреч" if archive else "Запланированные встречи"
     text = (
         f"{title}:\nНажми на встречу, чтобы открыть детали."
         if meetups
-        else ("В архиве пока нет встреч." if archive else "Пока нет запланированных встреч.")
+        else (
+            "Ты пока не создал ни одной запланированной встречи."
+            if mine
+            else "В архиве пока нет встреч."
+            if archive
+            else "Пока нет запланированных встреч."
+        )
     )
-    keyboard = get_meetups_list_keyboard(meetups, archive=archive)
+    keyboard = get_meetups_list_keyboard(meetups, archive=archive, mine=mine)
     if edit_message:
         await message.edit_text(text, reply_markup=keyboard)
     else:
@@ -1646,6 +1953,172 @@ async def _render_meetup_details(
     await callback.answer()
 
 
+async def _return_to_meetup_edit_menu(
+    callback: CallbackQuery,
+    state: FSMContext,
+    *,
+    answer_text: str | None = None,
+) -> None:
+    data = await state.get_data()
+    meetup_id = data.get("editing_meetup_id")
+    archive = bool(data.get("edit_archive", False))
+    message = callback.message
+    if not isinstance(meetup_id, int) or not isinstance(message, Message):
+        await callback.answer("Не удалось вернуться к редактированию.", show_alert=True)
+        return
+    await state.clear()
+    await message.edit_text(
+        "Что изменить?",
+        reply_markup=get_meetup_edit_keyboard(meetup_id, archive=archive),
+    )
+    await callback.answer(answer_text)
+
+
+async def _save_meetup_edit(
+    state: FSMContext,
+    *,
+    message: Message | None,
+    callback: CallbackQuery | None,
+    fields: dict[str, str | int | list[int] | None],
+) -> None:
+    data = await state.get_data()
+    meetup_id = data.get("editing_meetup_id")
+    requesting_user_id = data.get("edit_owner_user_id")
+    if not isinstance(meetup_id, int) or not isinstance(requesting_user_id, int):
+        await state.clear()
+        error = "Данные редактирования потерялись. Открой встречу заново."
+        if callback is not None:
+            await callback.answer(error, show_alert=True)
+        elif message is not None:
+            await message.answer(error)
+        return
+
+    backend_client = BackendAPIClient()
+    try:
+        meetup = await backend_client.update_meetup(
+            meetup_id,
+            requesting_user_id=requesting_user_id,
+            fields=fields,
+        )
+    except httpx.HTTPStatusError as exc:
+        error = _extract_error_detail(exc)
+        if callback is not None:
+            await callback.answer(error, show_alert=True)
+        elif message is not None:
+            await message.answer(error)
+        return
+    except httpx.HTTPError:
+        error = "Не удалось связаться с backend API."
+        if callback is not None:
+            await callback.answer(error, show_alert=True)
+        elif message is not None:
+            await message.answer(error)
+        return
+
+    await state.clear()
+    bot = (
+        callback.bot
+        if callback is not None
+        else message.bot if message is not None else None
+    )
+    refreshed = await _refresh_edited_meetup(
+        meetup,
+        data=data,
+        bot=bot,
+    )
+    result_text = (
+        "Изменения сохранены."
+        if refreshed
+        else "Изменения сохранены, но карточку встречи не удалось обновить."
+    )
+    if callback is not None:
+        await callback.answer(result_text, show_alert=not refreshed)
+    elif message is not None:
+        await message.answer(result_text)
+
+
+async def _refresh_edited_meetup(
+    meetup: dict,
+    *,
+    data: dict,
+    bot: Bot | None,
+) -> bool:
+    if bot is None:
+        logger.error("Meetup %s was edited without an available Telegram bot", meetup.get("id"))
+        return False
+
+    refreshed = True
+    if meetup.get("telegram_chat_id") is not None and meetup.get("telegram_message_id") is not None:
+        try:
+            await _refresh_group_meetup_card(
+                bot,
+                meetup,
+                telegram_id=data.get("edit_telegram_user_id", 0),
+                has_photo=False,
+            )
+        except TelegramAPIError:
+            refreshed = False
+            logger.exception(
+                "Meetup %s was edited but its group card could not be refreshed",
+                meetup["id"],
+            )
+
+    chat_id = data.get("edit_card_chat_id")
+    message_id = data.get("edit_card_message_id")
+    owner_id = data.get("edit_owner_user_id")
+    telegram_user_id = data.get("edit_telegram_user_id")
+    if (
+        not isinstance(chat_id, int)
+        or not isinstance(message_id, int)
+        or not isinstance(owner_id, int)
+        or not isinstance(telegram_user_id, int)
+    ):
+        return refreshed
+
+    participants = meetup.get("participants", [])
+    joined_telegram_ids = {participant["telegram_id"] for participant in participants}
+    can_join = (
+        not data.get("edit_archive", False)
+        and meetup.get("status") == "planned"
+        and telegram_user_id not in joined_telegram_ids
+        and len(participants) < meetup["capacity_total"]
+    )
+    text = _format_meetup_details(meetup, selected_games=meetup.get("games") or None)
+    markup = get_meetup_detail_keyboard(
+        meetup,
+        current_user_id=owner_id,
+        can_join=can_join,
+        archive=bool(data.get("edit_archive", False)),
+    )
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=markup,
+        )
+    except TelegramAPIError:
+        logger.exception(
+            "Meetup %s was edited but its private card could not be refreshed",
+            meetup["id"],
+        )
+        try:
+            await bot.send_message(
+                chat_id=telegram_user_id,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=markup,
+            )
+        except TelegramAPIError:
+            refreshed = False
+            logger.exception(
+                "Meetup %s was edited but a replacement private card could not be sent",
+                meetup["id"],
+            )
+    return refreshed
+
+
 def _build_group_keyboard_for_user(meetup: dict, *, telegram_id: int):
     joined_user_ids = {participant["telegram_id"] for participant in meetup.get("participants", [])}
     is_joined = telegram_id in joined_user_ids
@@ -1719,7 +2192,10 @@ async def _build_group_meetup_rich_message(
     capacity = meetup["capacity_total"]
     free = max(capacity - joined_count, 0)
     heading_text = format_meetup_weekday_time(meetup["scheduled_at"])
-    if games:
+    meeting_title = meetup.get("title")
+    if meeting_title:
+        heading_text = f"{meeting_title} {heading_text}"
+    elif games:
         first_game_title = str(games[0].get("title") or "Встреча")
         heading_text = f"{first_game_title} {heading_text}"
     blocks = []
@@ -2097,6 +2573,14 @@ async def toggle_game_selection(callback: CallbackQuery, state: FSMContext) -> N
 async def finish_game_selection(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     sel_games = data.get("selected_games") or []
+    if isinstance(data.get("editing_meetup_id"), int):
+        await _save_meetup_edit(
+            state,
+            message=None,
+            callback=callback,
+            fields={"game_ids": list(data.get("selected_game_ids") or [])},
+        )
+        return
 
     # compute maximum playable for all selected games, taking owned expansions into account
     max_for_all = None
@@ -2129,6 +2613,16 @@ async def finish_game_selection(callback: CallbackQuery, state: FSMContext) -> N
 @router.callback_query(F.data == MEETUP_GAME_SKIP_CALLBACK)
 async def skip_game_selection(callback: CallbackQuery, state: FSMContext) -> None:
     # User chose to skip selecting games — proceed to capacity step with no games
+    data = await state.get_data()
+    if isinstance(data.get("editing_meetup_id"), int):
+        await _save_meetup_edit(
+            state,
+            message=None,
+            callback=callback,
+            fields={"game_ids": []},
+        )
+        return
+
     await state.update_data(selected_games=[], selected_game_ids=[])
     await state.set_state(CreateMeetupStates.waiting_for_capacity)
     await _edit_creation_prompt(
@@ -2590,6 +3084,9 @@ def _format_collection_owner_suggestion_notification(
 
 def _format_meetup_heading(meetup: dict, selected_games: list[dict] | None = None) -> str:
     weekday_time = escape(format_meetup_weekday_time(meetup["scheduled_at"]))
+    meeting_title = meetup.get("title")
+    if meeting_title:
+        return f"<b>{escape(str(meeting_title))} {weekday_time}</b>"
     if selected_games:
         first_game_title = escape(str(selected_games[0].get("title") or "Встреча"))
         return f"<b>{first_game_title} {weekday_time}</b>"

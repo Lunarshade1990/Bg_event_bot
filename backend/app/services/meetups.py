@@ -132,6 +132,7 @@ def _build_meetup_read(meetup: Meetup) -> MeetupRead:
         id=meetup.id,
         scheduled_at=meetup.scheduled_at,
         capacity_total=meetup.capacity_total,
+        title=meetup.title,
         comment=meetup.comment,
         status=meetup.status,
         creator_user_id=meetup.creator_user_id,

@@ -22,6 +22,7 @@ from bot.app.handlers.meetups import (
     _start_private_chat_meetup_creation,
     change_games_page,
     finish_suggesting_meetup_games,
+    open_meetups_menu,
     receive_meetup_date,
     skip_game_selection,
     toggle_game_selection,
@@ -61,6 +62,42 @@ def test_meetups_menu_shows_created_meetups_only_when_available() -> None:
 
     assert "Созданные мной" not in hidden_labels
     assert "Созданные мной" in visible_labels
+
+
+@pytest.mark.asyncio
+async def test_open_meetups_menu_checks_both_upcoming_and_archived_meetups(
+    monkeypatch,
+) -> None:
+    class MeetupMenuBackend(FakeBackendAPIClient):
+        async def list_meetups(self, *, archive: bool, limit: int, offset: int):
+            requested_categories.append(archive)
+            return [
+                {
+                    "creator_user_id": 1,
+                    "id": 42 if archive else 43,
+                    "scheduled_at": (
+                        "2026-06-01T18:00:00+00:00"
+                        if archive
+                        else "2027-06-01T18:00:00+00:00"
+                    ),
+                    "capacity_total": 4,
+                    "participants": [],
+                }
+            ]
+
+    requested_categories: list[bool] = []
+    monkeypatch.setattr("bot.app.handlers.meetups.BackendAPIClient", MeetupMenuBackend)
+    message = DummyMessage()
+
+    await open_meetups_menu(message, DummyState())
+
+    assert requested_categories == [False, True]
+    labels = {
+        button.text
+        for row in message.last_answer.reply_markup.keyboard
+        for button in row
+    }
+    assert "Созданные мной" in labels
 
 
 def test_meetups_list_keyboard_switches_category_and_preserves_item_context() -> None:

@@ -130,6 +130,7 @@ async def open_meetups_menu(message: Message, state: FSMContext) -> None:
                         break
                     offset += 100
     except httpx.HTTPError:
+        logger.exception("Failed to load meetups while opening the meetup menu")
         await message.answer(
             "Не удалось проверить созданные встречи. Раздел встреч:",
             reply_markup=get_meetups_menu_keyboard(),
@@ -1842,6 +1843,11 @@ async def _send_meetups_list(
                     break
                 offset += limit
     except httpx.HTTPError:
+        logger.exception(
+            "Failed to load meetups from backend (archive=%s, mine=%s)",
+            archive,
+            mine,
+        )
         text = "Не удалось загрузить список встреч."
         if edit_message:
             await message.edit_text(text)

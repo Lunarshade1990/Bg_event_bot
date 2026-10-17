@@ -1,11 +1,37 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.orm import Session
 
+from backend.app.db.models.enums import MeetupStatus
 from backend.app.schemas.meetup import MeetupCreateRequest
 from backend.app.services import meetups as meetup_service
 from tests.fixtures.meetups import make_meetup, make_user
+
+
+def test_build_meetup_read_includes_title() -> None:
+    meetup = SimpleNamespace(
+        id=42,
+        scheduled_at=datetime(2026, 10, 16, 18, 0, tzinfo=UTC),
+        capacity_total=4,
+        title="Game night",
+        comment=None,
+        status=MeetupStatus.PLANNED,
+        creator_user_id=7,
+        telegram_chat_id=None,
+        telegram_thread_id=None,
+        telegram_message_id=None,
+        creator=SimpleNamespace(id=7, user_games=[]),
+        participants=[],
+        meetup_games=[],
+        game_suggestions=[],
+        game_votes=[],
+    )
+
+    response = meetup_service._build_meetup_read(meetup)
+
+    assert response.title == "Game night"
 
 
 def test_join_meetup_rejects_when_full(db_session: Session) -> None:

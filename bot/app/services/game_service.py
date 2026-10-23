@@ -44,11 +44,11 @@ def _group_owned_games(games: list[dict]) -> list[dict]:
             game,
             base_games_by_bgg_id=base_games_by_bgg_id,
         )
-        if len(matched_base_games) != 1:
+        if not matched_base_games:
             continue
 
-        base_game = matched_base_games[0]
-        owned_expansions_by_base_id[base_game["id"]].append(game)
+        for base_game in matched_base_games:
+            owned_expansions_by_base_id[base_game["id"]].append(game)
         attached_expansion_ids.add(game["id"])
 
     entries: list[dict] = []

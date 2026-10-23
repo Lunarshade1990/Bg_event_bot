@@ -77,6 +77,59 @@ def test_group_owned_games_attaches_single_owned_base_expansions() -> None:
     assert grouped[1]["game"]["title"] == "Standalone Expansion"
 
 
+def test_group_owned_games_attaches_multi_parent_expansion_to_all_matched_bases() -> None:
+    games = [
+        {
+            "id": 1,
+            "bgg_id": 100,
+            "title": "Black Rose Wars",
+            "author": "Author",
+            "min_players": 1,
+            "max_players": 4,
+            "play_time_minutes": 90,
+            "game_type": "base",
+            "has_campaign": False,
+            "bgg_expands_ids_cached": [],
+        },
+        {
+            "id": 2,
+            "bgg_id": 200,
+            "title": "Black Rose Wars: Rebirth",
+            "author": "Author",
+            "min_players": 1,
+            "max_players": 4,
+            "play_time_minutes": 90,
+            "game_type": "base",
+            "has_campaign": False,
+            "bgg_expands_ids_cached": [],
+        },
+        {
+            "id": 3,
+            "bgg_id": 300,
+            "title": "Black Rose Wars: Sator Box",
+            "author": "Author",
+            "min_players": 1,
+            "max_players": 6,
+            "play_time_minutes": 180,
+            "game_type": "expansion",
+            "has_campaign": False,
+            "bgg_expands_ids_cached": [100, 200],
+        },
+    ]
+
+    grouped = _group_owned_games(games)
+
+    assert len(grouped) == 2
+    assert grouped[0]["game"]["title"] == "Black Rose Wars"
+    assert [exp["title"] for exp in grouped[0]["expansions"]] == [
+        "Black Rose Wars: Sator Box"
+    ]
+    assert grouped[1]["game"]["title"] == "Black Rose Wars: Rebirth"
+    assert [exp["title"] for exp in grouped[1]["expansions"]] == [
+        "Black Rose Wars: Sator Box"
+    ]
+
+
 def test_build_grouped_entry_sums_extra_players_from_multiple_expansions() -> None:
     base_game = {
         "title": "Base Game",

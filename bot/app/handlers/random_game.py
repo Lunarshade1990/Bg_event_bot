@@ -11,6 +11,7 @@ from aiogram.types import (
     Message,
 )
 
+from bot.app.keyboards.main_menu import RANDOM_GAME_BUTTON_TEXT
 from bot.app.services.backend_api import BackendAPIClient
 from bot.app.services.game_service import load_owned_games
 from bot.app.states.random_game import RandomGameState
@@ -22,6 +23,7 @@ DONE_CALLBACK = "DONE_CALLBACK"
 
 
 @router.message(Command("random_game"))
+@router.message(F.text == RANDOM_GAME_BUTTON_TEXT)
 async def get_random_game_from_user_list(message: Message, state: FSMContext):
     await state.set_state(RandomGameState.waiting_for_players_count)
     await message.answer("Сколько человек будет играть?")

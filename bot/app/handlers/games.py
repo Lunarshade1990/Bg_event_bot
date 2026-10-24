@@ -24,6 +24,12 @@ from bot.app.keyboards.games import (
     get_other_user_games_keyboard,
     get_other_users_keyboard,
 )
+from bot.app.keyboards.main_menu import (
+    COLLECTIONS_MENU_TEXT,
+    MY_GAMES_BUTTON_TEXT,
+    OTHER_GAMES_BUTTON_TEXT,
+    get_collections_menu_keyboard,
+)
 from bot.app.services.backend_api import BackendAPIClient
 from bot.app.services.game_service import load_owned_games
 from bot.app.services.rich_message_media import load_game_cover_photos
@@ -31,7 +37,12 @@ from bot.app.services.rich_message_media import load_game_cover_photos
 router = Router(name="games")
 
 
-@router.message(F.text == "Мои игры")
+@router.message(F.text == COLLECTIONS_MENU_TEXT)
+async def open_collections_menu(message: Message) -> None:
+    await message.answer("Коллекции игр:", reply_markup=get_collections_menu_keyboard())
+
+
+@router.message(F.text == MY_GAMES_BUTTON_TEXT)
 async def show_my_games(message: Message) -> None:
     user = message.from_user
     if user is None:
@@ -41,7 +52,7 @@ async def show_my_games(message: Message) -> None:
     await _render_my_games_page(message=message, telegram_id=user.id, offset=0)
 
 
-@router.message(F.text == "Игры других")
+@router.message(F.text == OTHER_GAMES_BUTTON_TEXT)
 async def show_other_users(message: Message) -> None:
     user = message.from_user
     if user is None:

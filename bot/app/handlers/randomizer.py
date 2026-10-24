@@ -10,6 +10,11 @@ from aiogram.types import (
     Message,
 )
 
+from bot.app.keyboards.main_menu import (
+    RANDOMIZER_COMPONENTS_BUTTON_TEXT,
+    RANDOMIZERS_MENU_TEXT,
+    get_randomizers_menu_keyboard,
+)
 from bot.app.keyboards.meetups import (
     get_game_group_keyboard,
     get_games_list_keyboard,
@@ -19,13 +24,19 @@ from bot.app.services.backend_api import BackendAPIClient
 from bot.app.states.random_game import RandomizerStates
 
 router = Router(name="randomizer")
-MENU_TEXT = "🎲 Рандомайзер"
+MENU_TEXT = RANDOMIZER_COMPONENTS_BUTTON_TEXT
 GAME_GROUP_CALLBACK = "rz:gamegroup"
 GAME_LETTER_CALLBACK = "rz:gameletter"
 GAME_PAGE_CALLBACK = "rz:gamepage"
 GAME_PICK_CALLBACK = "rz:pickgame"
 PAGE_SIZE = 8
 OPTIONS_PAGE_SIZE = 20
+
+
+@router.message(F.text == RANDOMIZERS_MENU_TEXT)
+async def open_randomizers_menu(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("Рандомайзеры:", reply_markup=get_randomizers_menu_keyboard())
 
 
 @router.message(F.text == MENU_TEXT)

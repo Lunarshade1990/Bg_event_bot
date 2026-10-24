@@ -27,7 +27,7 @@ from aiogram.types import (
 )
 
 from backend.app.core.config import get_settings
-from bot.app.keyboards.main_menu import get_main_menu_keyboard
+from bot.app.keyboards.main_menu import MEETUPS_MENU_TEXT, get_main_menu_keyboard
 from bot.app.keyboards.meetups import (
     MEETUP_CALLBACK_PREFIX,
     MEETUP_CHAT_SELECTION_CALLBACK_PREFIX,
@@ -102,7 +102,7 @@ SKIP_COMMENT_VALUES = {"-", "пропустить", "skip"}
 _topic_thread_cache: dict[int, int] = {}
 
 
-@router.message(F.text == "Встречи")
+@router.message(F.text == MEETUPS_MENU_TEXT)
 async def open_meetups_menu(message: Message, state: FSMContext) -> None:
     await state.clear()
     user = message.from_user

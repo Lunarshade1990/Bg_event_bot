@@ -3,14 +3,14 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
-from bot.app.keyboards.main_menu import get_main_menu_keyboard
+from bot.app.keyboards.main_menu import IMPORT_MENU_TEXT, get_main_menu_keyboard
 from bot.app.services.backend_api import BackendAPIClient
 from bot.app.states.import_bgg import ImportBggStates
 
 router = Router(name="imports")
 
 
-@router.message(F.text == "Импорт из BGG")
+@router.message(F.text == IMPORT_MENU_TEXT)
 async def start_bgg_import(message: Message, state: FSMContext) -> None:
     user = message.from_user
     if user is None:
